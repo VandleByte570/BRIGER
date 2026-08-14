@@ -334,4 +334,33 @@ Provide a helpful, accurate response. If the task involves file changes, show th
 
         if not is_available:
             if __event_emitter__:
-                await
+                await __event_emitter__(
+                    "status",
+                    {"description": "OpenCode unavailable, using fallback...", "done": True}
+                )
+            async for chunk in self._fallback_to_llm(body, __request__, __user__):
+                yield chunk
+            return
+
+        if __event_emitter__:
+            await __event_emitter__(
+                "status",
+                {"description": f"OpenCode Agent ({model_id}) is processing...", "done": False}
+            )
+
+        prompt = self._build_godmode_prompt(messages, model_id)
+
+        try:
+            async for chunk in self._call_opencode_api(prompt, stream=stream):
+                yield chunk
+        finally:
+            if __event_emitter__:
+                await __event_emitter__(
+                    "status",
+                    {"description": "OpenCode Agent completed", "done": True}
+                )
+
+    async def on_shutdown(self):
+        """Cleanup on pipe shutdown."""
+        if self._client:
+            await self._client.aclose()
