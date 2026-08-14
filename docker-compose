@@ -1,0 +1,102 @@
+# =============================================================================
+# Unified AI Suite: Docker Compose Wrapper
+# =============================================================================
+# Usage:
+#   docker compose up -d          # Start in detached mode
+#   docker compose up --build     # Build and start
+#   docker compose down           # Stop and remove containers
+#   docker compose logs -f        # Follow logs
+# =============================================================================
+
+services:
+  unified-ai-suite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: final
+    image: unified-ai-suite:latest
+    container_name: unified-ai-suite
+    restart: unless-stopped
+
+    ports:
+      - "${PORT:-8080}:8080"
+      - "${OPENCODE_SERVER_PORT:-4096}:4096"
+
+    env_file:
+      - .env
+
+    environment:
+      - PORT=${PORT:-8080}
+      - HOST=0.0.0.0
+      - DATA_DIR=/app/data
+      - ENV=prod
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-}
+      - WEBUI_AUTH=${WEBUI_AUTH:-true}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP:-true}
+      - WEBUI_NAME=${WEBUI_NAME:-Unified AI Suite}
+      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/data/webui.db}
+      - OPENCODE_SERVER_PORT=4096
+      - OPENCODE_SERVER_HOSTNAME=0.0.0.0
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:-}
+      - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
+      - OPENCODE_CONFIG_DIR=/app/.opencode
+      - GODMODE_ENABLED=${GODMODE_ENABLED:-true}
+      - GODMODE_AUTO_CHECKPOINT=${GODMODE_AUTO_CHECKPOINT:-true}
+      - GODMODE_REQUIRE_CONFIRMATION=${GODMODE_REQUIRE_CONFIRMATION:-true}
+      - SCARF_NO_ANALYTICS=true
+      - DO_NOT_TRACK=true
+      - ANONYMIZED_TELEMETRY=false
+      - RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - RAG_EMBEDDING_ENGINE=${RAG_EMBEDDING_ENGINE:-}
+      - DEVICE_TYPE=cpu
+      - ENABLE_RAG_WEB_SEARCH=${ENABLE_RAG_WEB_SEARCH:-false}
+      - RAG_WEB_SEARCH_ENGINE=${RAG_WEB_SEARCH_ENGINE:-duckduckgo}
+      - SEARXNG_QUERY_URL=${SEARXNG_QUERY_URL:-}
+      - GLOBAL_LOG_LEVEL=${GLOBAL_LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    volumes:
+      - openwebui-data:/app/data
+      - opencode-workspace:/app/workspace
+      - ./.opencode/skills:/app/.opencode/skills:ro
+      - ./open_webui/functions:/app/open_webui/functions:ro
+      - ./open_webui/tools:/app/open_webui/tools:ro
+      - suite-logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+    networks:
+      - unified-ai-network
+
+volumes:
+  openwebui-data:
+    driver: local
+  opencode-workspace:
+    driver: local
+  suite-logs:
+    driver: local
+
+networks:
+  unified-ai-network:
+    driver: bridge
