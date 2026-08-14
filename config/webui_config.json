@@ -1,0 +1,38 @@
+{
+  "_comment": "Open WebUI seed configuration. Applied on first startup.",
+  "version": "1.0.0",
+  "name": "Unified AI Suite",
+  "default_locale": "en",
+  "default_models": [],
+  "features": {
+    "enable_signup": true,
+    "enable_api_keys": true,
+    "enable_web_search": true,
+    "enable_image_generation": false,
+    "enable_code_interpreter": true,
+    "enable_terminal": true
+  },
+  "connections": {
+    "opencode": {
+      "name": "OpenCode Agent",
+      "type": "pipe",
+      "enabled": true,
+      "description": "Agentic coding engine with GodMode workflow",
+      "source": "/app/open_webui/functions/opencode_pipe.py"
+    }
+  },
+  "ui": {
+    "theme": "system",
+    "show_admin_details": true,
+    "banners": [
+      {
+        "id": "unified-suite-welcome",
+        "type": "info",
+        "title": "Welcome to Unified AI Suite",
+        "content": "Open WebUI + OpenCode + GodMode Engine are running. Use the OpenCode Agent model for agentic coding tasks.",
+        "dismissible": true,
+        "timestamp": 0
+      }
+    ]
+  }
+}
