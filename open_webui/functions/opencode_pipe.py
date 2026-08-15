@@ -1,366 +1,608 @@
 """
 title: OpenCode Agent Pipe
-author: Unified AI Suite
-version: 1.0.0
+author: BRIGER
+version: 2.0.0
 license: MIT
-description: >
-  Integrates OpenCode headless server into Open WebUI as a first-class model.
-  This Pipe Function proxies chat requests to the local OpenCode server
-  (running on port 4096 inside the container) and enforces the GodMode
-  5-stage gated engineering workflow.
 
-  Features:
-    - Auto-discovery of local OpenCode server
-    - GodMode workflow enforcement (Define -> Plan -> Execute -> Review -> Ship)
-    - Streaming response support
-    - Graceful fallback to direct LLM if OpenCode is unavailable
-    - Structured execution logging
+description:
+    Open WebUI Pipe integration for the BRIGER OpenCode server.
 
-requirements: httpx
+requirements:
+    httpx
 """
 
-import os
 import json
-import asyncio
+from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional, List, Dict, Any
-from datetime import datetime
 
+import httpx
 from pydantic import BaseModel, Field
 from fastapi import Request
-import httpx
 
 
 class Pipe:
-    """
-    OpenCode Agent Pipe for Open WebUI.
-
-    This pipe registers as a model named "OpenCode Agent" in the Open WebUI
-    model selector. When selected, user messages are forwarded to the local
-    OpenCode server for agentic coding execution with GodMode workflow
-    enforcement.
-    """
 
     class Valves(BaseModel):
-        """Configurable valves for the pipe."""
+
         OPENCODE_SERVER_URL: str = Field(
             default="http://127.0.0.1:4096",
-            description="OpenCode server base URL"
+            description="OpenCode server URL",
         )
+
         OPENCODE_SERVER_USERNAME: str = Field(
             default="opencode",
-            description="OpenCode server basic auth username"
+            description="OpenCode username",
         )
+
         OPENCODE_SERVER_PASSWORD: str = Field(
             default="",
-            description="OpenCode server basic auth password"
+            description="OpenCode password",
         )
+
         GODMODE_ENABLED: bool = Field(
             default=True,
-            description="Enable GodMode 5-stage workflow enforcement"
+            description="Enable GodMode workflow",
         )
+
         GODMODE_AUTO_CHECKPOINT: bool = Field(
             default=True,
-            description="Auto-save checkpoints between workflow stages"
+            description="Enable automatic checkpoints",
         )
+
         FALLBACK_MODEL: str = Field(
             default="",
-            description="Fallback model ID if OpenCode server is unavailable"
+            description="Fallback Open WebUI model",
         )
+
         REQUEST_TIMEOUT: float = Field(
-            default=300.0,
-            description="HTTP request timeout in seconds"
+            default=1800.0,
+            description="OpenCode request timeout",
         )
+
         STREAMING_ENABLED: bool = Field(
             default=True,
-            description="Enable streaming responses"
+            description="Enable streaming",
         )
+
         WORKSPACE_DIR: str = Field(
             default="/app/workspace",
-            description="OpenCode workspace directory"
+            description="OpenCode workspace",
         )
 
     def __init__(self):
+
         self.type = "manifold"
         self.id = "opencode"
         self.name = "opencode/"
-        self.valves = self.Valves()
-        self._client: Optional[httpx.AsyncClient] = None
-        self._server_available: Optional[bool] = None
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client with auth."""
+        self.valves = self.Valves()
+
+        self._client: Optional[
+            httpx.AsyncClient
+        ] = None
+
+        self._server_available: Optional[
+            bool
+        ] = None
+
+
+    # =========================================================================
+    # HTTP Client
+    # =========================================================================
+
+    def _get_client(
+        self,
+    ) -> httpx.AsyncClient:
+
         if self._client is None:
+
             auth = None
+
             if self.valves.OPENCODE_SERVER_PASSWORD:
+
                 auth = httpx.BasicAuth(
                     self.valves.OPENCODE_SERVER_USERNAME,
-                    self.valves.OPENCODE_SERVER_PASSWORD
+                    self.valves.OPENCODE_SERVER_PASSWORD,
                 )
+
             self._client = httpx.AsyncClient(
                 base_url=self.valves.OPENCODE_SERVER_URL,
                 auth=auth,
-                timeout=self.valves.REQUEST_TIMEOUT,
-                follow_redirects=True
+                timeout=httpx.Timeout(
+                    self.valves.REQUEST_TIMEOUT,
+                    connect=10.0,
+                ),
+                follow_redirects=True,
             )
+
         return self._client
 
-    async def _check_server_health(self) -> bool:
-        """Check if OpenCode server is reachable."""
-        if self._server_available is not None:
-            return self._server_available
-        try:
-            client = self._get_client()
-            for endpoint in ["/health", "/docs", "/"]:
-                try:
-                    resp = await client.get(endpoint, timeout=5.0)
-                    if resp.status_code < 500:
-                        self._server_available = True
-                        return True
-                except Exception:
-                    continue
-            self._server_available = False
-        except Exception:
-            self._server_available = False
-        return self._server_available
 
-    def pipes(self) -> List[Dict[str, Any]]:
-        """Return available models (manifold)."""
+    # =========================================================================
+    # Health
+    # =========================================================================
+
+    async def _check_server_health(
+        self,
+    ) -> bool:
+
+        try:
+
+            client = self._get_client()
+
+            response = await client.get(
+                "/health",
+                timeout=5.0,
+            )
+
+            if response.status_code < 500:
+
+                self._server_available = True
+
+                return True
+
+        except Exception:
+
+            pass
+
+        self._server_available = False
+
+        return False
+
+
+    # =========================================================================
+    # Models
+    # =========================================================================
+
+    def pipes(
+        self,
+    ) -> List[Dict[str, Any]]:
+
         return [
             {
                 "id": "opencode-agent",
                 "name": "OpenCode Agent",
-                "description": "Agentic coding with GodMode workflow (Define->Plan->Execute->Review->Ship)"
+                "description": (
+                    "BRIGER OpenCode Agent with "
+                    "GodMode workflow"
+                ),
             },
             {
                 "id": "opencode-fast",
                 "name": "OpenCode Fast",
-                "description": "Quick coding tasks without full GodMode gating"
-            }
+                "description": (
+                    "OpenCode coding agent without "
+                    "GodMode gating"
+                ),
+            },
         ]
 
-    def _build_godmode_prompt(self, messages: List[Dict[str, Any]], model_id: str) -> str:
-        """Inject GodMode workflow instructions into the prompt."""
-        if not self.valves.GODMODE_ENABLED or model_id == "opencode-fast":
-            return self._build_simple_prompt(messages)
+
+    # =========================================================================
+    # Prompt Construction
+    # =========================================================================
+
+    def _build_simple_prompt(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+
+        conversation = []
+
+        for message in messages:
+
+            role = message.get(
+                "role",
+                "user",
+            )
+
+            content = message.get(
+                "content",
+                "",
+            )
+
+            if not content:
+                continue
+
+            conversation.append(
+                f"{role.upper()}:\n{content}"
+            )
+
+        return f"""
+You are BRIGER's OpenCode coding agent.
+
+WORKSPACE:
+{self.valves.WORKSPACE_DIR}
+
+Rules:
+
+- Work only inside the workspace.
+- Inspect the repository before changing files.
+- Make minimal changes.
+- Run relevant tests.
+- Do not expose secrets.
+- Do not perform destructive system operations.
+
+Conversation:
+
+{chr(10).join(conversation)}
+""".strip()
+
+
+    def _build_godmode_prompt(
+        self,
+        messages: List[Dict[str, Any]],
+        model_id: str,
+    ) -> str:
+
+        if (
+            not self.valves.GODMODE_ENABLED
+            or model_id == "opencode-fast"
+        ):
+
+            return self._build_simple_prompt(
+                messages
+            )
 
         user_message = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_message = msg.get("content", "")
+
+        for message in reversed(messages):
+
+            if message.get("role") == "user":
+
+                user_message = message.get(
+                    "content",
+                    "",
+                )
+
                 break
 
-        godmode_system = f"""You are the GodMode Engineering Orchestrator.
+        now = (
+            datetime.now(timezone.utc)
+            .isoformat()
+        )
 
-CURRENT TIME: {datetime.utcnow().isoformat()}Z
-WORKSPACE: {self.valves.WORKSPACE_DIR}
+        return f"""
+You are BRIGER's GodMode Engineering Orchestrator.
 
-## GodMode Workflow Enforcement
-You MUST follow the 5-stage gated engineering workflow:
+CURRENT TIME:
+{now}
 
-### Stage 01: DEFINE
-- Extract clear requirements from the user's request
-- Ask clarifying questions if anything is ambiguous
-- Produce a written definition document
-- WAIT for user approval before proceeding
+WORKSPACE:
+{self.valves.WORKSPACE_DIR}
 
-### Stage 02: PLAN
-- Analyze the codebase context
-- Break work into atomic, sequenced, verifiable tasks
-- Document architecture decisions
-- Include rollback strategy
-- WAIT for user approval before proceeding
+You must follow this engineering workflow:
 
-### Stage 03: EXECUTE
-- Implement tasks in order with checkpoint commits
-- Ask for confirmation before destructive operations
-- Run tests and verification after each task
-- Maintain execution log
+## Stage 01 — DEFINE
 
-### Stage 04: REVIEW
-- Self-review against requirements, quality, security, performance
-- Produce review report
-- WAIT for user approval before shipping
+- Understand the request.
+- Identify requirements.
+- Identify ambiguity.
+- Produce a definition.
+- Ask for approval if the task requires staged approval.
 
-### Stage 05: SHIP
-- Final verification
-- Merge and deliver
-- Produce ship report
+## Stage 02 — PLAN
 
-## Safety Rules
-- ALWAYS ask before rm, git push, or overwriting files
-- NEVER execute commands without understanding them
-- ALWAYS run tests after code changes
-- NEVER skip workflow stages
-- ALWAYS checkpoint with git commits between stages
+- Inspect the repository.
+- Identify affected files.
+- Produce an implementation plan.
+- Identify risks and rollback strategy.
 
-## User Request
-{user_message}
+## Stage 03 — EXECUTE
 
-Begin with Stage 01: DEFINE. Present your definition document and ask for approval.
-"""
-        return godmode_system
+- Implement approved changes.
+- Run appropriate tests.
+- Avoid unnecessary changes.
+- Never expose credentials.
 
-    def _build_simple_prompt(self, messages: List[Dict[str, Any]]) -> str:
-        """Build a simple prompt for fast mode."""
-        user_message = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_message = msg.get("content", "")
-                break
+## Stage 04 — REVIEW
 
-        return f"""You are an expert software engineering assistant running inside the OpenCode environment.
+- Review the implementation.
+- Check correctness.
+- Check security.
+- Check tests.
+- Identify remaining issues.
 
-WORKSPACE: {self.valves.WORKSPACE_DIR}
+## Stage 05 — SHIP
 
-## Capabilities
-- Read and write files
-- Execute shell commands
-- Run git operations
-- Analyze code with LSP
-- Manage git worktrees
+- Perform final verification.
+- Summarize changes.
+- Report test results.
+- Do not push remotely unless explicitly requested.
 
 ## Safety
-- Ask for confirmation before destructive operations
-- Never commit secrets or credentials
-- Run tests when available
+
+- Do not modify files outside the workspace.
+- Do not expose secrets.
+- Do not delete the repository.
+- Do not use destructive system commands.
+- Do not perform git push unless explicitly requested.
 
 ## User Request
+
 {user_message}
+""".strip()
 
-Provide a helpful, accurate response. If the task involves file changes, show the changes clearly.
-"""
 
-    async def _call_opencode_api(self, prompt: str, stream: bool = False) -> AsyncGenerator[str, None]:
-        """Call OpenCode server API with the given prompt."""
+    # =========================================================================
+    # OpenCode API
+    # =========================================================================
+
+    async def _call_opencode_api(
+        self,
+        prompt: str,
+        stream: bool = True,
+    ) -> AsyncGenerator[str, None]:
+
         client = self._get_client()
 
         payload = {
             "prompt": prompt,
             "stream": stream,
             "workspace": self.valves.WORKSPACE_DIR,
-            "mode": "headless"
+            "mode": "headless",
         }
 
         try:
+
             if stream:
+
                 async with client.stream(
                     "POST",
                     "/tui",
                     json=payload,
-                    timeout=self.valves.REQUEST_TIMEOUT
+                    timeout=httpx.Timeout(
+                        self.valves.REQUEST_TIMEOUT,
+                        connect=10.0,
+                    ),
                 ) as response:
+
+                    response.raise_for_status()
+
                     async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[6:]
+
+                        if not line:
+                            continue
+
+                        if line.startswith(
+                            "data: "
+                        ):
+
+                            data = line[
+                                6:
+                            ]
+
                             try:
-                                parsed = json.loads(data)
-                                content = parsed.get("content", "")
+
+                                parsed = json.loads(
+                                    data
+                                )
+
+                                content = parsed.get(
+                                    "content",
+                                    "",
+                                )
+
                                 if content:
                                     yield content
+
                             except json.JSONDecodeError:
+
                                 yield data
-                        elif line.strip():
+
+                        elif line.startswith(
+                            "event:"
+                        ):
+
+                            continue
+
+                        else:
+
                             yield line
+
             else:
+
                 response = await client.post(
                     "/tui",
                     json=payload,
-                    timeout=self.valves.REQUEST_TIMEOUT
+                    timeout=httpx.Timeout(
+                        self.valves.REQUEST_TIMEOUT,
+                        connect=10.0,
+                    ),
                 )
+
                 response.raise_for_status()
+
                 data = response.json()
-                content = data.get("content", data.get("response", data.get("text", str(data))))
-                yield content
+
+                content = data.get(
+                    "content",
+                    data.get(
+                        "response",
+                        data.get(
+                            "text",
+                            "",
+                        ),
+                    ),
+                )
+
+                if content:
+                    yield content
+                else:
+                    yield json.dumps(
+                        data,
+                        indent=2,
+                    )
 
         except httpx.ConnectError:
-            yield "**OpenCode Server Unavailable**\n\n"
-            yield "The OpenCode server at `{}` is not reachable. ".format(self.valves.OPENCODE_SERVER_URL)
-            yield "Please check that the server is running on port 4096.\n\n"
-            yield "You can still use Open WebUI with other configured models."
-        except httpx.HTTPStatusError as e:
-            yield f"**OpenCode Server Error** ({e.response.status_code})\n\n"
-            yield f"```\n{e.response.text[:500]}\n```"
-        except Exception as e:
-            yield f"**Integration Error**: {type(e).__name__}: {str(e)[:500]}"
 
-    async def _fallback_to_llm(
-        self,
-        body: dict,
-        __request__: Request,
-        __user__: dict
-    ) -> AsyncGenerator[str, None]:
-        """Fallback to Open WebUI's internal LLM routing."""
-        try:
-            from open_webui.utils.chat import generate_chat_completion
-            from open_webui.models.users import Users
+            yield (
+                "**OpenCode Server Unavailable**\n\n"
+                f"Cannot connect to "
+                f"`{self.valves.OPENCODE_SERVER_URL}`."
+            )
 
-            user = await Users.get_user_by_id(__user__["id"])
-            fallback_model = self.valves.FALLBACK_MODEL or body.get("model", "")
-            if fallback_model.startswith("opencode."):
-                fallback_model = fallback_model.replace("opencode.", "", 1)
-            body["model"] = fallback_model or "gpt-4o"
+        except httpx.TimeoutException:
 
-            result = await generate_chat_completion(__request__, body, user)
-            if hasattr(result, "__aiter__"):
-                async for chunk in result:
-                    yield chunk
-            else:
-                yield result
-        except Exception as e:
-            yield f"**Fallback Error**: {type(e).__name__}: {str(e)[:500]}"
+            yield (
+                "**OpenCode Server Timeout**\n\n"
+                "The coding task exceeded the configured "
+                "request timeout."
+            )
+
+        except httpx.HTTPStatusError as exc:
+
+            yield (
+                f"**OpenCode Server Error "
+                f"({exc.response.status_code})**\n\n"
+                f"```text\n"
+                f"{exc.response.text[:2000]}"
+                f"\n```"
+            )
+
+        except Exception as exc:
+
+            yield (
+                f"**OpenCode Integration Error**\n\n"
+                f"`{type(exc).__name__}: "
+                f"{str(exc)[:1000]}`"
+            )
+
+
+    # =========================================================================
+    # Pipe
+    # =========================================================================
 
     async def pipe(
         self,
         body: dict,
         __user__: dict,
         __request__: Request,
-        __event_emitter__=None
+        __event_emitter__=None,
     ) -> AsyncGenerator[str, None]:
-        """
-        Main pipe handler. Receives Open WebUI chat completion requests
-        and routes them to OpenCode server.
-        """
-        model_id = body.get("model", "").replace("opencode.", "", 1)
-        messages = body.get("messages", [])
-        stream = body.get("stream", True)
+
+        model_id = (
+            body.get(
+                "model",
+                "",
+            )
+            .replace(
+                "opencode.",
+                "",
+                1,
+            )
+        )
+
+        messages = body.get(
+            "messages",
+            [],
+        )
+
+        stream = body.get(
+            "stream",
+            True,
+        )
+
+        if not self.valves.STREAMING_ENABLED:
+            stream = False
+
 
         if __event_emitter__:
+
             await __event_emitter__(
                 "status",
-                {"description": "Connecting to OpenCode server...", "done": False}
+                {
+                    "description": (
+                        "Connecting to BRIGER OpenCode..."
+                    ),
+                    "done": False,
+                },
             )
 
-        is_available = await self._check_server_health()
 
-        if not is_available:
+        available = (
+            await self._check_server_health()
+        )
+
+
+        if not available:
+
             if __event_emitter__:
+
                 await __event_emitter__(
                     "status",
-                    {"description": "OpenCode unavailable, using fallback...", "done": True}
+                    {
+                        "description": (
+                            "OpenCode server unavailable."
+                        ),
+                        "done": True,
+                    },
                 )
-            async for chunk in self._fallback_to_llm(body, __request__, __user__):
-                yield chunk
+
+            yield (
+                "**BRIGER OpenCode is unavailable.**\n\n"
+                "Check the OpenCode server at "
+                f"`{self.valves.OPENCODE_SERVER_URL}`."
+            )
+
             return
 
+
         if __event_emitter__:
+
             await __event_emitter__(
                 "status",
-                {"description": f"OpenCode Agent ({model_id}) is processing...", "done": False}
+                {
+                    "description": (
+                        f"OpenCode Agent "
+                        f"({model_id}) is working..."
+                    ),
+                    "done": False,
+                },
             )
 
-        prompt = self._build_godmode_prompt(messages, model_id)
+
+        prompt = self._build_godmode_prompt(
+            messages,
+            model_id,
+        )
+
 
         try:
-            async for chunk in self._call_opencode_api(prompt, stream=stream):
-                yield chunk
+
+            async for chunk in self._call_opencode_api(
+                prompt,
+                stream=stream,
+            ):
+
+                if chunk:
+                    yield chunk
+
         finally:
+
             if __event_emitter__:
+
                 await __event_emitter__(
                     "status",
-                    {"description": "OpenCode Agent completed", "done": True}
+                    {
+                        "description": (
+                            "OpenCode Agent completed."
+                        ),
+                        "done": True,
+                    },
                 )
 
-    async def on_shutdown(self):
-        """Cleanup on pipe shutdown."""
+
+    # =========================================================================
+    # Shutdown
+    # =========================================================================
+
+    async def on_shutdown(
+        self,
+    ):
+
         if self._client:
+
             await self._client.aclose()
+
+            self._client = None
