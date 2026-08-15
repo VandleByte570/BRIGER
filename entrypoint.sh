@@ -1,258 +1,285 @@
-#!/usr/bin/env bash
+# =============================================================================
+# BRIGER
+# Open WebUI + OpenCode + FastAPI Bridge
+# =============================================================================
 
-set -Eeuo pipefail
+FROM python:3.11-slim-bookworm AS base
 
-# ==============================================================================
-# BRIGER ENTRYPOINT
-# ==============================================================================
+LABEL maintainer="BRIGER"
+LABEL description="BRIGER - Open WebUI + OpenCode"
+LABEL version="2.0.0"
 
-APP_DIR="${APP_DIR:-/app}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
+ENV DEBIAN_FRONTEND=noninteractive \
+ PYTHONDONTWRITEBYTECODE=1 \
+ PYTHONUNBUFFERED=1 \
+ PIP_NO_CACHE_DIR=1 \
+ PIP_DISABLE_PIP_VERSION_CHECK=1
 
-OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/app/.opencode}"
+# =============================================================================
+# System dependencies
+# =============================================================================
 
-OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
-OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+ git \
+ build-essential \
+ gcc \
+ g++ \
+ python3-dev \
+ curl \
+ jq \
+ ca-certificates \
+ supervisor \
+ tini \
+ nodejs \
+ npm \
+ ffmpeg \
+ pandoc \
+ libsm6 \
+ libxext6 \
+ libgl1 \
+ && rm -rf /var/lib/apt/lists/* \
+ /tmp/* \
+ /var/tmp/*
 
-# Open WebUI port.
-# PORT is commonly supplied by Hugging Face Spaces.
-WEBUI_PORT="${PORT:-8080}"
+# =============================================================================
+# Open WebUI
+# =============================================================================
 
-LOG_DIR="${LOG_DIR:-/app/logs}"
+FROM base AS openwebui-builder
 
-# ==============================================================================
-# Helpers
-# ==============================================================================
+RUN pip install --no-cache-dir \
+ "open-webui>=0.6.0,<1.0.0"
 
-log() {
- echo "[BRIGER] $*"
-}
+# =============================================================================
+# OpenCode
+# =============================================================================
 
-fail() {
- echo "[BRIGER][ERROR] $*" >&2
- exit 1
-}
+FROM base AS opencode-builder
 
-# ==============================================================================
-# Directories
-# ==============================================================================
+RUN npm install -g opencode-ai \
+ && opencode --version
 
-mkdir -p \
- "$WORKSPACE_DIR" \
- "$OPENCODE_CONFIG_DIR" \
- "$OPENCODE_CONFIG_DIR/skills" \
- "$LOG_DIR" \
- "/app/data"
+# =============================================================================
+# Final image
+# =============================================================================
 
-# ==============================================================================
-# Permissions
-# ==============================================================================
+FROM base AS final
 
-chmod +x \
- "$APP_DIR/entrypoint.sh" \
- 2>/dev/null || true
+# -----------------------------------------------------------------------------
+# Python / Open WebUI
+# -----------------------------------------------------------------------------
 
-# ==============================================================================
-# Environment
-# ==============================================================================
+COPY --from=openwebui-builder \
+ /usr/local/lib/python3.11/site-packages \
+ /usr/local/lib/python3.11/site-packages
 
-export WORKSPACE_DIR
-export OPENCODE_CONFIG_DIR
-export OPENCODE_SERVER_HOSTNAME
-export OPENCODE_SERVER_PORT
-export PORT="$WEBUI_PORT"
+COPY --from=openwebui-builder \
+ /usr/local/bin/open-webui \
+ /usr/local/bin/open-webui
 
-# OpenCode should operate against the BRIGER workspace.
-export OPENCODE_DIR="$WORKSPACE_DIR"
+# -----------------------------------------------------------------------------
+# Node / OpenCode
+# -----------------------------------------------------------------------------
 
-# ==============================================================================
-# OpenCode configuration
-# ==============================================================================
+COPY --from=opencode-builder \
+ /usr/local/lib/node_modules \
+ /usr/local/lib/node_modules
 
-if [[ -f "$APP_DIR/config/opencode.json" ]]; then
+COPY --from=opencode-builder \
+ /usr/local/bin/opencode \
+ /usr/local/bin/opencode
 
- cp \
- "$APP_DIR/config/opencode.json" \
- "$OPENCODE_CONFIG_DIR/opencode.json"
+# -----------------------------------------------------------------------------
+# Application directories
+# -----------------------------------------------------------------------------
 
- log "OpenCode configuration installed."
+RUN mkdir -p \
+ /app/data \
+ /app/config \
+ /app/.opencode/skills \
+ /app/.opencode/plugins \
+ /app/.cache/opencode \
+ /app/.config/opencode \
+ /app/.local/share/opencode \
+ /app/scripts \
+ /app/open_webui/functions \
+ /app/open_webui/tools \
+ /app/opencode_server \
+ /app/logs \
+ /app/workspace \
+ /var/log/supervisor \
+ /var/run
 
-fi
+# -----------------------------------------------------------------------------
+# OpenCode environment
+# -----------------------------------------------------------------------------
 
-# ==============================================================================
+ENV OPENCODE_CONFIG_DIR=/app/.opencode \
+ OPENCODE_CACHE_DIR=/app/.cache/opencode \
+ XDG_CONFIG_HOME=/app/.config \
+ XDG_CACHE_HOME=/app/.cache \
+ XDG_DATA_HOME=/app/.local/share
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+COPY config/opencode.json \
+ /app/.opencode/opencode.json
+
+COPY config/supervisord.conf \
+ /etc/supervisor/conf.d/supervisord.conf
+
+COPY config/openwebui.env.example \
+ /app/config/openwebui.env.example
+
+COPY config/webui_config.json \
+ /app/config/webui_config.json
+
+# -----------------------------------------------------------------------------
 # Skills
-# ==============================================================================
+# -----------------------------------------------------------------------------
 
-SKILL_SOURCE_DIR="$APP_DIR/opencode/skills"
-SKILL_TARGET_DIR="$OPENCODE_CONFIG_DIR/skills"
+COPY .opencode/skills/ \
+ /app/.opencode/skills/
 
-if [[ -d "$SKILL_SOURCE_DIR" ]]; then
+# -----------------------------------------------------------------------------
+# Open WebUI integrations
+# -----------------------------------------------------------------------------
 
- while IFS= read -r -d '' skill_file; do
+COPY open_webui/functions/ \
+ /app/open_webui/functions/
 
- skill_name="$(basename "$skill_file")"
+COPY open_webui/tools/ \
+ /app/open_webui/tools/
 
- cp \
- "$skill_file" \
- "$SKILL_TARGET_DIR/$skill_name"
+# -----------------------------------------------------------------------------
+# BRIGER OpenCode API
+# -----------------------------------------------------------------------------
 
- log "Installed skill: $skill_name"
+COPY opencode_server/ \
+ /app/opencode_server/
 
- done < <(
- find "$SKILL_SOURCE_DIR" \
- -maxdepth 1 \
- -type f \
- -name "*.md" \
- -print0
- )
+RUN pip install --no-cache-dir \
+ -r /app/opencode_server/requirements.txt
 
-fi
+# -----------------------------------------------------------------------------
+# Scripts
+# -----------------------------------------------------------------------------
 
-# Also install repository-level skills if present.
-if [[ -d "$APP_DIR/.opencode/skills" ]]; then
+COPY scripts/build.sh \
+ /app/scripts/build.sh
 
- while IFS= read -r -d '' skill_file; do
+COPY entrypoint.sh \
+ /app/entrypoint.sh
 
- skill_name="$(basename "$skill_file")"
+# -----------------------------------------------------------------------------
+# Permissions
+# -----------------------------------------------------------------------------
 
- cp \
- "$skill_file" \
- "$SKILL_TARGET_DIR/$skill_name"
+RUN chmod +x \
+ /app/entrypoint.sh \
+ /app/scripts/build.sh \
+ && chmod 644 \
+ /app/.opencode/opencode.json \
+ /etc/supervisor/conf.d/supervisord.conf
 
- log "Installed repository skill: $skill_name"
+# =============================================================================
+# Non-root user
+# =============================================================================
 
- done < <(
- find "$APP_DIR/.opencode/skills" \
- -maxdepth 1 \
- -type f \
- -name "*.md" \
- -print0
- )
+RUN groupadd \
+ --system \
+ --gid 1000 \
+ appuser \
+ && useradd \
+ --system \
+ --uid 1000 \
+ --gid 1000 \
+ --home-dir /app \
+ --shell /bin/bash \
+ appuser \
+ && chown -R \
+ appuser:appuser \
+ /app \
+ /var/log/supervisor \
+ /var/run
 
-fi
+# =============================================================================
+# Runtime environment
+# =============================================================================
 
-# ==============================================================================
-# Create a safe BRIGER system skill
-# ==============================================================================
+ENV DATA_DIR=/app/data \
+ PORT=8080 \
+ HOST=0.0.0.0 \
+ OPENCODE_SERVER_PORT=4096 \
+ OPENCODE_SERVER_HOSTNAME=0.0.0.0 \
+ OPENCODE_SERVER_USERNAME=opencode \
+ OPENCODE_SERVER_PASSWORD="" \
+ WORKSPACE_DIR=/app/workspace \
+ OPENCODE_CONFIG_DIR=/app/.opencode \
+ OPENCODE_TIMEOUT=1800 \
+ COMMAND_TIMEOUT=300 \
+ DOCKER=true \
+ ENV=prod \
+ WEBUI_NAME="BRIGER" \
+ ENABLE_SIGNUP=true \
+ DEFAULT_MODELS="" \
+ SCARF_NO_ANALYTICS=true \
+ DO_NOT_TRACK=true \
+ ANONYMIZED_TELEMETRY=false \
+ WEBUI_SECRET_KEY="" \
+ PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app \
+ PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-BRIGER_SKILL="$SKILL_TARGET_DIR/briger.md"
+# =============================================================================
+# Ports
+# =============================================================================
 
-if [[ ! -f "$BRIGER_SKILL" ]]; then
+EXPOSE 8080
+EXPOSE 7860
+EXPOSE 4096
 
- cat > "$BRIGER_SKILL" <<'EOF'
-# BRIGER Engineering Rules
+# =============================================================================
+# Persistent data
+# =============================================================================
 
-You are operating inside the BRIGER workspace.
+VOLUME [
+ "/app/data",
+ "/app/workspace",
+ "/app/logs"
+]
 
-## Workspace
+# =============================================================================
+# Health check
+# =============================================================================
 
-Only modify files inside the configured workspace.
+HEALTHCHECK \
+ --interval=30s \
+ --timeout=10s \
+ --start-period=90s \
+ --retries=5 \
+ CMD-SHELL \
+ curl -fsS \
+ "http://127.0.0.1:$${PORT:-8080}/health" \
+ >/dev/null \
+ || exit 1
 
-## Workflow
+# =============================================================================
+# Run as non-root
+# =============================================================================
 
-1. Inspect the repository.
-2. Understand the existing architecture.
-3. Plan the smallest safe change.
-4. Implement the change.
-5. Run relevant tests.
-6. Review the resulting changes.
-7. Report what was changed.
+USER appuser
 
-## Safety
+# =============================================================================
+# Init
+# =============================================================================
 
-Never expose secrets.
+ENTRYPOINT [
+ "/usr/bin/tini",
+ "--"
+]
 
-Never print API keys, passwords, tokens, cookies, private keys,
-or other credentials.
-
-Do not delete the entire repository.
-
-Do not modify files outside the workspace.
-
-Do not push to remote Git repositories unless explicitly requested.
-
-## Code Quality
-
-Prefer existing project conventions.
-
-Avoid unnecessary dependencies.
-
-Do not rewrite unrelated code.
-
-When fixing a bug, identify the root cause rather than masking symptoms.
-
-Always verify changes where practical.
-EOF
-
- log "Created BRIGER system skill."
-
-fi
-
-# ==============================================================================
-# Verify OpenCode
-# ==============================================================================
-
-if command -v opencode >/dev/null 2>&1; then
-
- log "OpenCode binary:"
- opencode --version || true
-
-else
-
- log "WARNING: 'opencode' binary was not found."
-
-fi
-
-# ==============================================================================
-# Verify Python application
-# ==============================================================================
-
-if [[ ! -f "$APP_DIR/opencode_server/main.py" ]]; then
-
- fail "Missing opencode_server/main.py"
-
-fi
-
-# ==============================================================================
-# Verify configuration
-# ==============================================================================
-
-SUPERVISOR_CONF="/etc/supervisor/conf.d/supervisord.conf"
-
-if [[ ! -f "$SUPERVISOR_CONF" ]]; then
-
- fail "Missing $SUPERVISOR_CONF"
-
-fi
-
-# ==============================================================================
-# Do NOT dump the complete environment.
-#
-# The previous implementation wrote `export` output to disk. That could expose
-# API keys, passwords, tokens, and other secrets.
-# ==============================================================================
-
-rm -f \
- "/app/.env.export" \
- 2>/dev/null || true
-
-# ==============================================================================
-# Supervisor
-# ==============================================================================
-
-log "=================================================="
-log " BRIGER"
-log "=================================================="
-log "Workspace : $WORKSPACE_DIR"
-log "OpenCode server : $OPENCODE_SERVER_HOSTNAME:$OPENCODE_SERVER_PORT"
-log "Open WebUI : 0.0.0.0:$WEBUI_PORT"
-log "Config : $OPENCODE_CONFIG_DIR"
-log "=================================================="
-
-# ==============================================================================
-# Start supervisor
-# ==============================================================================
-
-exec /usr/bin/supervisord \
- -n \
- -c "$SUPERVISOR_CONF"
+CMD [
+ "/app/entrypoint.sh"
+]
