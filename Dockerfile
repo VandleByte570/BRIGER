@@ -190,9 +190,7 @@ HEALTHCHECK \
     --timeout=10s \
     --start-period=120s \
     --retries=5 \
-    CMD-SHELL \
-    curl -fsS "http://127.0.0.1:$${PORT:-7860}/health" \
-    >/dev/null || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-7860}/health" >/dev/null || exit 1
 
 # ============================================================
 # Non-root
@@ -204,6 +202,6 @@ USER appuser
 # Startup
 # ============================================================
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["tini", "--"]
 
 CMD ["/app/entrypoint.sh"]
