@@ -83,8 +83,15 @@ COPY config/opencode.json \
 
 COPY config/supervisord.conf \
     /etc/supervisor/conf.d/supervisord.conf
+# Also install a copy inside the app config directory so the entrypoint
+# can find it when /etc is not available (e.g., when running outside the
+# built image or with different mounts).
+COPY config/supervisord.conf \
+    /app/config/supervisord.conf
 RUN test -f /etc/supervisor/conf.d/supervisord.conf && \
     echo "BRIGER: supervisord.conf installed successfully"
+RUN test -f /app/config/supervisord.conf && \
+    echo "BRIGER: repo supervisord.conf installed successfully"
 
 COPY config/openwebui.env.example \
     /app/config/openwebui.env.example
@@ -125,7 +132,8 @@ RUN chmod +x /app/entrypoint.sh \
     /app/scripts/build.sh \
     && chmod 644 \
     /app/.opencode/opencode.json \
-    /etc/supervisor/conf.d/supervisord.conf
+    /etc/supervisor/conf.d/supervisord.conf \
+    /app/config/supervisord.conf
 
 # ============================================================
 # User
