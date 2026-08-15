@@ -4,9 +4,9 @@ author: Unified AI Suite
 version: 1.0.0
 license: MIT
 description: >
-  Exposes OpenCode capabilities as Open WebUI Tools that any LLM can invoke.
-  Provides file operations, shell execution, git worktree management, and
-  LSP-based code understanding through the local OpenCode server.
+ Exposes OpenCode capabilities as Open WebUI Tools that any LLM can invoke.
+ Provides file operations, shell execution, git worktree management, and
+ LSP-based code understanding through the local OpenCode server.
 requirements: httpx
 """
 
@@ -15,7 +15,6 @@ import json
 import httpx
 from typing import Optional
 from pydantic import BaseModel, Field
-
 
 class Tools:
     """
@@ -51,14 +50,14 @@ class Tools:
         self.valves = self.Valves()
         self.citation = True
 
-    def _get_client(self) -> httpx.Client:
+    def _get_client(self) -> httpx.AsyncClient:
         auth = None
         if self.valves.OPENCODE_SERVER_PASSWORD:
             auth = httpx.BasicAuth(
                 self.valves.OPENCODE_SERVER_USERNAME,
                 self.valves.OPENCODE_SERVER_PASSWORD
             )
-        return httpx.Client(
+        return httpx.AsyncClient(
             base_url=self.valves.OPENCODE_SERVER_URL,
             auth=auth,
             timeout=self.valves.TIMEOUT
@@ -82,8 +81,8 @@ class Tools:
         """
         work_dir = cwd or self.valves.WORKSPACE_DIR
         try:
-            with self._get_client() as client:
-                resp = client.post(
+            async with self._get_client() as client:
+                resp = await client.post(
                     "/execute",
                     json={
                         "type": "shell",
@@ -124,8 +123,8 @@ class Tools:
         logs, or documentation before making changes.
         """
         try:
-            with self._get_client() as client:
-                resp = client.post(
+            async with self._get_client() as client:
+                resp = await client.post(
                     "/file/read",
                     json={
                         "path": file_path,
@@ -137,7 +136,7 @@ class Tools:
                 resp.raise_for_status()
                 data = resp.json()
                 content = data.get("content", "")
-                lines = content.split("\n")
+                lines = content.splitlines()
                 total_lines = len(lines)
                 snippet = "\n".join(lines[offset:offset + limit])
                 return f"File: {file_path} (lines {offset+1}-{min(offset+limit, total_lines)} of {total_lines})\n```\n{snippet}\n```"
@@ -165,8 +164,8 @@ class Tools:
         path and content with the user before invoking this tool.
         """
         try:
-            with self._get_client() as client:
-                resp = client.post(
+            async with self._get_client() as client:
+                resp = await client.post(
                     "/file/write",
                     json={
                         "path": file_path,
@@ -195,88 +194,4 @@ class Tools:
         """
         work_dir = cwd or self.valves.WORKSPACE_DIR
         try:
-            with self._get_client() as client:
-                resp = client.post(
-                    "/git/status",
-                    json={"cwd": work_dir}
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return json.dumps(data, indent=2)
-        except Exception as e:
-            return f"Error checking git status: {type(e).__name__}: {str(e)}"
-
-    async def opencode_git_worktree(
-        self,
-        action: str = Field(
-            ...,
-            description="Action: create, list, or remove"
-        ),
-        branch: Optional[str] = Field(
-            default=None,
-            description="Branch name for create/remove"
-        ),
-        path: Optional[str] = Field(
-            default=None,
-            description="Path for the worktree"
-        ),
-        __user__: dict = {}
-    ) -> str:
-        """
-        Manage git worktrees for isolated parallel development. Use 'create'
-        to spawn a new worktree, 'list' to see active worktrees, 'remove'
-        to clean up.
-        """
-        try:
-            with self._get_client() as client:
-                resp = client.post(
-                    "/git/worktree",
-                    json={
-                        "action": action,
-                        "branch": branch,
-                        "path": path,
-                        "workspace": self.valves.WORKSPACE_DIR
-                    }
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return json.dumps(data, indent=2)
-        except Exception as e:
-            return f"Error managing worktree: {type(e).__name__}: {str(e)}"
-
-    async def opencode_lsp_query(
-        self,
-        file_path: str = Field(
-            ...,
-            description="File to analyze"
-        ),
-        query_type: str = Field(
-            default="symbols",
-            description="Query type: symbols, references, hover, diagnostics"
-        ),
-        symbol: Optional[str] = Field(
-            default=None,
-            description="Symbol name for references/hover queries"
-        ),
-        __user__: dict = {}
-    ) -> str:
-        """
-        Query LSP-based code understanding. Use this to get symbol definitions,
-        find references, type information, or diagnostics for a file.
-        """
-        try:
-            with self._get_client() as client:
-                resp = client.post(
-                    "/lsp/query",
-                    json={
-                        "file": file_path,
-                        "type": query_type,
-                        "symbol": symbol,
-                        "workspace": self.valves.WORKSPACE_DIR
-                    }
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return json.dumps(data, indent=2)
-        except Exception as e:
-            return f"Error querying LSP: {type(e).__name__}: {str(e)}"
+            async with self._get_client() as
