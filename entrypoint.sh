@@ -1,395 +1,280 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# =============================================================================
-# BRIGER - Container Entrypoint
-# =============================================================================
+set -Eeuo pipefail
 
-set -euo pipefail
+# ==============================================================================
+# BRIGER ENTRYPOINT
+# ==============================================================================
 
+APP_DIR="${APP_DIR:-/app}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
 
-# =============================================================================
-# Colors
-# =============================================================================
+OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/app/.opencode}"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
+OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
 
+# Open WebUI port.
+# PORT is commonly supplied by Hugging Face Spaces.
+WEBUI_PORT="${PORT:-8080}"
 
-# =============================================================================
-# Logging
-# =============================================================================
+LOG_DIR="${LOG_DIR:-/app/logs}"
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+# ==============================================================================
+# Helpers
+# ==============================================================================
+
+log() {
+    echo "[BRIGER] $*"
 }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+fail() {
+    echo "[BRIGER][ERROR] $*" >&2
+    exit 1
 }
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-log_step() {
-    echo -e "${BLUE}[STEP]${NC} $1"
-}
-
-
-# =============================================================================
-# Environment
-# =============================================================================
-
-log_step "Initializing BRIGER..."
-
-export PORT="${PORT:-8080}"
-export HOST="${HOST:-0.0.0.0}"
-
-export DATA_DIR="${DATA_DIR:-/app/data}"
-
-export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/app/.opencode}"
-export OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
-export OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
-
-export OPENCODE_SERVER_USERNAME="${OPENCODE_SERVER_USERNAME:-opencode}"
-export OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-}"
-
-export WEBUI_AUTH="${WEBUI_AUTH:-true}"
-export ENABLE_SIGNUP="${ENABLE_SIGNUP:-true}"
-export WEBUI_NAME="${WEBUI_NAME:-Unified AI Suite}"
-
-export OPENAI_API_BASE_URL="${OPENAI_API_BASE_URL:-}"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-}"
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-export GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"
-
-export DATABASE_URL="${DATABASE_URL:-sqlite:////app/data/webui.db}"
-
-export ENV="${ENV:-prod}"
-export DOCKER="${DOCKER:-true}"
-
-export SCARF_NO_ANALYTICS="${SCARF_NO_ANALYTICS:-true}"
-export DO_NOT_TRACK="${DO_NOT_TRACK:-true}"
-export ANONYMIZED_TELEMETRY="${ANONYMIZED_TELEMETRY:-false}"
-
-export RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}"
-export RAG_EMBEDDING_ENGINE="${RAG_EMBEDDING_ENGINE:-}"
-
-export DEVICE_TYPE="${DEVICE_TYPE:-cpu}"
-
-export ENABLE_RAG_WEB_SEARCH="${ENABLE_RAG_WEB_SEARCH:-false}"
-export RAG_WEB_SEARCH_ENGINE="${RAG_WEB_SEARCH_ENGINE:-duckduckgo}"
-export SEARXNG_QUERY_URL="${SEARXNG_QUERY_URL:-}"
-
-export GLOBAL_LOG_LEVEL="${GLOBAL_LOG_LEVEL:-INFO}"
-export LOG_LEVEL="${LOG_LEVEL:-INFO}"
-
-export WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
-
-
-# =============================================================================
-# Secret
-# =============================================================================
-
-if [ -z "${WEBUI_SECRET_KEY:-}" ]; then
-    export WEBUI_SECRET_KEY="$(openssl rand -hex 32)"
-
-    log_warn "WEBUI_SECRET_KEY was not provided."
-    log_warn "A temporary key has been generated."
-    log_warn "Set WEBUI_SECRET_KEY in production."
-fi
-
-
-# =============================================================================
+# ==============================================================================
 # Directories
-# =============================================================================
-
-log_step "Preparing directories..."
+# ==============================================================================
 
 mkdir -p \
-    "${DATA_DIR}" \
-    "${OPENCODE_CONFIG_DIR}" \
-    "${OPENCODE_CONFIG_DIR}/skills" \
-    "${WORKSPACE_DIR}" \
-    /app/logs \
-    /var/log/supervisor \
-    /var/run
+    "$WORKSPACE_DIR" \
+    "$OPENCODE_CONFIG_DIR" \
+    "$OPENCODE_CONFIG_DIR/skills" \
+    "$LOG_DIR" \
+    "/app/data"
 
-
-# =============================================================================
+# ==============================================================================
 # Permissions
-# =============================================================================
+# ==============================================================================
 
-chown -R appuser:appuser \
-    "${DATA_DIR}" \
-    "${WORKSPACE_DIR}" \
-    /app/logs \
-    /var/log/supervisor \
-    /var/run \
+chmod +x \
+    "$APP_DIR/entrypoint.sh" \
     2>/dev/null || true
 
+# ==============================================================================
+# Environment
+# ==============================================================================
 
-# =============================================================================
-# OpenCode Configuration
-# =============================================================================
+export WORKSPACE_DIR
+export OPENCODE_CONFIG_DIR
+export OPENCODE_SERVER_HOSTNAME
+export OPENCODE_SERVER_PORT
+export PORT="$WEBUI_PORT"
 
-log_step "Configuring OpenCode..."
+# OpenCode should operate against the BRIGER workspace.
+export OPENCODE_DIR="$WORKSPACE_DIR"
 
-OPENCODE_CONFIG_FILE="${OPENCODE_CONFIG_DIR}/opencode.json"
+# ==============================================================================
+# OpenCode configuration
+# ==============================================================================
 
-cat > "${OPENCODE_CONFIG_FILE}" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
+if [[ -f "$APP_DIR/config/opencode.json" ]]; then
 
-  "server": {
-    "port": ${OPENCODE_SERVER_PORT},
-    "hostname": "${OPENCODE_SERVER_HOSTNAME}",
-    "mdns": false,
-    "cors": [
-      "http://localhost:${PORT}",
-      "http://127.0.0.1:${PORT}",
-      "http://localhost:8080",
-      "http://127.0.0.1:8080",
-      "http://localhost:7860",
-      "http://127.0.0.1:7860"
-    ]
-  },
+    cp \
+        "$APP_DIR/config/opencode.json" \
+        "$OPENCODE_CONFIG_DIR/opencode.json"
 
-  "skills": [
-    "/app/.opencode/skills"
-  ],
+    log "OpenCode configuration installed."
 
-  "permission": {
-    "read": "allow",
-    "edit": "allow",
-    "write": "allow",
-    "bash": "allow",
-    "glob": "allow",
-    "grep": "allow",
-    "list": "allow",
-    "lsp": "allow",
-    "skill": "allow",
-    "task": "allow",
-    "webfetch": "allow",
-    "websearch": "allow",
-    "external_directory": "deny",
-    "git": "allow"
-  },
+fi
 
-  "workspace": "/app/workspace",
-  "log_level": "${LOG_LEVEL}"
-}
+# ==============================================================================
+# Skills
+# ==============================================================================
+
+SKILL_SOURCE_DIR="$APP_DIR/opencode/skills"
+SKILL_TARGET_DIR="$OPENCODE_CONFIG_DIR/skills"
+
+if [[ -d "$SKILL_SOURCE_DIR" ]]; then
+
+    while IFS= read -r -d '' skill_file; do
+
+        skill_name="$(basename "$skill_file")"
+
+        cp \
+            "$skill_file" \
+            "$SKILL_TARGET_DIR/$skill_name"
+
+        log "Installed skill: $skill_name"
+
+    done < <(
+        find "$SKILL_SOURCE_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name "*.md" \
+            -print0
+    )
+
+fi
+
+# Also install repository-level skills if present.
+if [[ -d "$APP_DIR/.opencode/skills" ]]; then
+
+    while IFS= read -r -d '' skill_file; do
+
+        skill_name="$(basename "$skill_file")"
+
+        cp \
+            "$skill_file" \
+            "$SKILL_TARGET_DIR/$skill_name"
+
+        log "Installed repository skill: $skill_name"
+
+    done < <(
+        find "$APP_DIR/.opencode/skills" \
+            -maxdepth 1 \
+            -type f \
+            -name "*.md" \
+            -print0
+    )
+
+fi
+
+# ==============================================================================
+# Create a safe BRIGER system skill
+# ==============================================================================
+
+BRIGER_SKILL="$SKILL_TARGET_DIR/briger.md"
+
+if [[ ! -f "$BRIGER_SKILL" ]]; then
+
+    cat > "$BRIGER_SKILL" <<'EOF'
+# BRIGER Engineering Rules
+
+You are operating inside the BRIGER workspace.
+
+## Workspace
+
+Only modify files inside the configured workspace.
+
+## Workflow
+
+1. Inspect the repository.
+2. Understand the existing architecture.
+3. Plan the smallest safe change.
+4. Implement the change.
+5. Run relevant tests.
+6. Review the resulting changes.
+7. Report what was changed.
+
+## Safety
+
+Never expose secrets.
+
+Never print API keys, passwords, tokens, cookies, private keys,
+or other credentials.
+
+Do not delete the entire repository.
+
+Do not modify files outside the workspace.
+
+Do not push to remote Git repositories unless explicitly requested.
+
+## Code Quality
+
+Prefer existing project conventions.
+
+Avoid unnecessary dependencies.
+
+Do not rewrite unrelated code.
+
+When fixing a bug, identify the root cause rather than masking symptoms.
+
+Always verify changes where practical.
 EOF
 
-chown appuser:appuser "${OPENCODE_CONFIG_FILE}"
-chmod 644 "${OPENCODE_CONFIG_FILE}"
+    log "Created BRIGER system skill."
 
-log_info "OpenCode configuration created."
-
-
-# =============================================================================
-# Open WebUI Functions
-# =============================================================================
-
-log_step "Installing Open WebUI integrations..."
-
-OPEN_WEBUI_FUNC_DIR="${DATA_DIR}/functions"
-OPEN_WEBUI_TOOLS_DIR="${DATA_DIR}/tools"
-
-mkdir -p \
-    "${OPEN_WEBUI_FUNC_DIR}" \
-    "${OPEN_WEBUI_TOOLS_DIR}"
-
-if [ -d "/app/open_webui/functions" ]; then
-    cp -f /app/open_webui/functions/*.py \
-        "${OPEN_WEBUI_FUNC_DIR}/" \
-        2>/dev/null || true
 fi
 
-if [ -d "/app/open_webui/tools" ]; then
-    cp -f /app/open_webui/tools/*.py \
-        "${OPEN_WEBUI_TOOLS_DIR}/" \
-        2>/dev/null || true
+# ==============================================================================
+# Verify OpenCode
+# ==============================================================================
+
+if command -v opencode >/dev/null 2>&1; then
+
+    log "OpenCode binary:"
+    opencode --version || true
+
+else
+
+    log "WARNING: 'opencode' binary was not found."
+
 fi
 
+# ==============================================================================
+# Verify Python application
+# ==============================================================================
 
-# =============================================================================
-# Pre-flight
-# =============================================================================
+if [[ ! -f "$APP_DIR/opencode_server/main.py" ]]; then
 
-log_step "Running pre-flight checks..."
+    fail "Missing opencode_server/main.py"
 
-
-if ! command -v open-webui >/dev/null 2>&1; then
-    log_error "open-webui executable not found."
-    exit 1
 fi
 
-log_info "Open WebUI: $(command -v open-webui)"
+# ==============================================================================
+# Verify configuration
+# ==============================================================================
 
+if [[ -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
 
-if ! command -v opencode >/dev/null 2>&1; then
-    log_error "opencode executable not found."
-    exit 1
+    if command -v python >/dev/null 2>&1; then
+
+        python - "$OPENCODE_CONFIG_DIR/opencode.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        json.load(f)
+except Exception as exc:
+    print(f"[BRIGER][ERROR] Invalid OpenCode config: {exc}")
+    sys.exit(1)
+
+print("[BRIGER] OpenCode config JSON is valid.")
+PY
+
+    fi
+
 fi
 
-log_info "OpenCode: $(command -v opencode)"
+# ==============================================================================
+# Do NOT dump the complete environment.
+#
+# The previous implementation wrote `export` output to disk. That could expose
+# API keys, passwords, tokens, and other secrets.
+# ==============================================================================
 
+rm -f \
+    "/app/.env.export" \
+    2>/dev/null || true
 
-if ! command -v supervisord >/dev/null 2>&1; then
-    log_error "supervisord executable not found."
-    exit 1
+# ==============================================================================
+# Supervisor
+# ==============================================================================
+
+if [[ ! -f "$APP_DIR/config/supervisord.conf" ]]; then
+
+    fail "Missing config/supervisord.conf"
+
 fi
 
+log "=================================================="
+log " BRIGER"
+log "=================================================="
+log "Workspace       : $WORKSPACE_DIR"
+log "OpenCode server : $OPENCODE_SERVER_HOSTNAME:$OPENCODE_SERVER_PORT"
+log "Open WebUI      : 0.0.0.0:$WEBUI_PORT"
+log "Config          : $OPENCODE_CONFIG_DIR"
+log "=================================================="
 
-if ! command -v python3 >/dev/null 2>&1; then
-    log_error "python3 executable not found."
-    exit 1
-fi
+# ==============================================================================
+# Start supervisor
+# ==============================================================================
 
-
-OPENCODE_VERSION="$(opencode --version 2>/dev/null || echo unknown)"
-
-log_info "OpenCode version: ${OPENCODE_VERSION}"
-log_info "Open WebUI port: ${PORT}"
-log_info "OpenCode port: ${OPENCODE_SERVER_PORT}"
-
-
-# =============================================================================
-# Validate Supervisor Configuration
-# =============================================================================
-
-log_step "Validating Supervisor configuration..."
-
-supervisord \
+exec /usr/bin/supervisord \
     -n \
-    -t \
-    -c /etc/supervisor/conf.d/supervisord.conf \
-    2>&1 || true
-
-
-# =============================================================================
-# Shutdown
-# =============================================================================
-
-cleanup() {
-    log_warn "Shutdown signal received."
-
-    if [ -n "${SUPERVISORD_PID:-}" ]; then
-        if kill -0 "${SUPERVISORD_PID}" 2>/dev/null; then
-            kill -TERM "${SUPERVISORD_PID}" 2>/dev/null || true
-            wait "${SUPERVISORD_PID}" 2>/dev/null || true
-        fi
-    fi
-
-    log_info "Shutdown complete."
-    exit 0
-}
-
-trap cleanup SIGTERM SIGINT
-
-
-# =============================================================================
-# Start Supervisor
-# =============================================================================
-
-log_step "Starting Supervisor..."
-
-supervisord \
-    -c /etc/supervisor/conf.d/supervisord.conf \
-    &
-
-SUPERVISORD_PID=$!
-
-log_info "Supervisor PID: ${SUPERVISORD_PID}"
-
-
-# =============================================================================
-# Health Monitoring
-# =============================================================================
-
-OPEN_WEBUI_READY=false
-OPENCODE_READY=false
-
-MAX_WAIT=180
-WAITED=0
-
-
-while [ "${WAITED}" -lt "${MAX_WAIT}" ]; do
-
-    if [ "${OPEN_WEBUI_READY}" = false ]; then
-
-        if curl \
-            -fsS \
-            "http://127.0.0.1:${PORT}/health" \
-            >/dev/null 2>&1
-        then
-            log_info "Open WebUI is healthy."
-            OPEN_WEBUI_READY=true
-        fi
-
-    fi
-
-
-    if [ "${OPENCODE_READY}" = false ]; then
-
-        if curl \
-            -fsS \
-            "http://127.0.0.1:${OPENCODE_SERVER_PORT}/health" \
-            >/dev/null 2>&1
-        then
-            log_info "OpenCode server is healthy."
-            OPENCODE_READY=true
-        fi
-
-    fi
-
-
-    if [ "${OPEN_WEBUI_READY}" = true ] &&
-       [ "${OPENCODE_READY}" = true ]
-    then
-
-        log_info "=============================================="
-        log_info "BRIGER is ready."
-        log_info "Open WebUI: http://localhost:${PORT}"
-        log_info "OpenCode:   http://localhost:${OPENCODE_SERVER_PORT}"
-        log_info "=============================================="
-
-        break
-    fi
-
-
-    sleep 2
-
-    WAITED=$((WAITED + 2))
-
-done
-
-
-if [ "${OPEN_WEBUI_READY}" = false ]; then
-    log_error "Open WebUI did not become healthy."
-    log_error "See /var/log/supervisor/openwebui-stderr.log"
-fi
-
-
-if [ "${OPENCODE_READY}" = false ]; then
-    log_error "OpenCode server did not become healthy."
-    log_error "See /var/log/supervisor/opencode-stderr.log"
-fi
-
-
-# =============================================================================
-# Keep Container Alive
-# =============================================================================
-
-wait "${SUPERVISORD_PID}"
-
-EXIT_CODE=$?
-
-log_warn "Supervisor exited with code ${EXIT_CODE}"
-
-exit "${EXIT_CODE}"
+    -c "$APP_DIR/config/supervisord.conf"
