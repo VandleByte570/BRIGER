@@ -14,9 +14,7 @@ OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/app/.opencode}"
 OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
 OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
 
-# Open WebUI port.
-# PORT is commonly supplied by Hugging Face Spaces.
-WEBUI_PORT="${PORT:-8080}"
+WEBUI_PORT="${PORT:-7860}"
 
 LOG_DIR="${LOG_DIR:-/app/logs}"
 
@@ -28,8 +26,12 @@ log() {
     echo "[BRIGER] $*"
 }
 
-fail() {
+error() {
     echo "[BRIGER][ERROR] $*" >&2
+}
+
+fail() {
+    error "$*"
     exit 1
 }
 
@@ -42,15 +44,7 @@ mkdir -p \
     "$OPENCODE_CONFIG_DIR" \
     "$OPENCODE_CONFIG_DIR/skills" \
     "$LOG_DIR" \
-    "/app/data"
-
-# ==============================================================================
-# Permissions
-# ==============================================================================
-
-chmod +x \
-    "$APP_DIR/entrypoint.sh" \
-    2>/dev/null || true
+    "$APP_DIR/data"
 
 # ==============================================================================
 # Environment
@@ -61,8 +55,6 @@ export OPENCODE_CONFIG_DIR
 export OPENCODE_SERVER_HOSTNAME
 export OPENCODE_SERVER_PORT
 export PORT="$WEBUI_PORT"
-
-# OpenCode should operate against the BRIGER workspace.
 export OPENCODE_DIR="$WORKSPACE_DIR"
 
 # ==============================================================================
@@ -71,16 +63,21 @@ export OPENCODE_DIR="$WORKSPACE_DIR"
 
 if [[ -f "$APP_DIR/config/opencode.json" ]]; then
 
-    cp \
+    cp -f \
         "$APP_DIR/config/opencode.json" \
         "$OPENCODE_CONFIG_DIR/opencode.json"
 
     log "OpenCode configuration installed."
 
+else
+
+    error "OpenCode configuration not found:"
+    error "$APP_DIR/config/opencode.json"
+
 fi
 
 # ==============================================================================
-# Skills
+# External OpenCode skills
 # ==============================================================================
 
 SKILL_SOURCE_DIR="$APP_DIR/opencode/skills"
@@ -94,13 +91,12 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
         target_file="$SKILL_TARGET_DIR/$skill_name"
 
         # Never copy a file onto itself.
-        if [[ -f "$target_file" ]] && \
-           [[ "$(realpath "$skill_file")" == "$(realpath "$target_file")" ]]; then
+        if [[ "$(realpath "$skill_file")" == "$(realpath "$target_file" 2>/dev/null || echo "$target_file")" ]]; then
             log "Skill already installed: $skill_name"
             continue
         fi
 
-        cp \
+        cp -f \
             "$skill_file" \
             "$target_file"
 
@@ -117,40 +113,23 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
 fi
 
 # ==============================================================================
-# Repository-level skills
+# Repository .opencode skills
 #
-# The Dockerfile already places .opencode/skills into:
+# These are already copied by the Dockerfile into:
 #
 #     /app/.opencode/skills
 #
-# which is the same directory used as SKILL_TARGET_DIR.
-#
-# Therefore, do not copy these files again.
+# DO NOT COPY THEM AGAIN.
 # ==============================================================================
 
-REPOSITORY_SKILL_DIR="$APP_DIR/.opencode/skills"
-
-if [[ -d "$REPOSITORY_SKILL_DIR" ]]; then
+if [[ -d "$OPENCODE_CONFIG_DIR/skills" ]]; then
 
     while IFS= read -r -d '' skill_file; do
 
-        skill_name="$(basename "$skill_file")"
-        target_file="$SKILL_TARGET_DIR/$skill_name"
-
-        if [[ -f "$target_file" ]] && \
-           [[ "$(realpath "$skill_file")" == "$(realpath "$target_file")" ]]; then
-            log "Repository skill already installed: $skill_name"
-            continue
-        fi
-
-        cp \
-            "$skill_file" \
-            "$target_file"
-
-        log "Installed repository skill: $skill_name"
+        log "Skill available: $(basename "$skill_file")"
 
     done < <(
-        find "$REPOSITORY_SKILL_DIR" \
+        find "$OPENCODE_CONFIG_DIR/skills" \
             -maxdepth 1 \
             -type f \
             -name "*.md" \
@@ -160,7 +139,7 @@ if [[ -d "$REPOSITORY_SKILL_DIR" ]]; then
 fi
 
 # ==============================================================================
-# Create a safe BRIGER system skill
+# BRIGER system skill
 # ==============================================================================
 
 BRIGER_SKILL="$SKILL_TARGET_DIR/briger.md"
@@ -174,42 +153,40 @@ You are operating inside the BRIGER workspace.
 
 ## Workspace
 
-Only modify files inside the configured workspace.
+Work inside the configured workspace.
 
 ## Workflow
 
-1. Inspect the repository.
-2. Understand the existing architecture.
+1. Inspect the existing project.
+2. Understand the architecture.
 3. Plan the smallest safe change.
 4. Implement the change.
-5. Run relevant tests.
-6. Review the resulting changes.
-7. Report what was changed.
+5. Test the change.
+6. Review the result.
+7. Report what changed.
 
 ## Safety
 
-Never expose secrets.
-
-Never print API keys, passwords, tokens, cookies, private keys,
-or other credentials.
+Never expose API keys, passwords, tokens, cookies,
+private keys, or other credentials.
 
 Do not delete the entire repository.
 
-Do not modify files outside the workspace.
+Do not modify unrelated files.
 
-Do not push to remote Git repositories unless explicitly requested.
+Do not push to a remote repository unless explicitly requested.
 
 ## Code Quality
 
-Prefer existing project conventions.
+Use existing project conventions.
 
 Avoid unnecessary dependencies.
 
 Do not rewrite unrelated code.
 
-When fixing a bug, identify the root cause rather than masking symptoms.
+Fix root causes rather than hiding symptoms.
 
-Always verify changes where practical.
+Verify changes whenever practical.
 EOF
 
     log "Created BRIGER system skill."
@@ -222,44 +199,38 @@ fi
 
 if command -v opencode >/dev/null 2>&1; then
 
-    log "OpenCode binary:"
+    log "OpenCode:"
     opencode --version || true
 
 else
 
-    log "WARNING: 'opencode' binary was not found."
+    error "OpenCode binary was not found."
 
 fi
 
 # ==============================================================================
-# Verify Python application
+# Verify BRIGER server
 # ==============================================================================
 
 if [[ ! -f "$APP_DIR/opencode_server/main.py" ]]; then
-
-    fail "Missing opencode_server/main.py"
-
+    fail "Missing $APP_DIR/opencode_server/main.py"
 fi
 
 # ==============================================================================
-# Verify configuration
+# Verify Supervisor
 # ==============================================================================
 
 SUPERVISOR_CONF="/etc/supervisor/conf.d/supervisord.conf"
 
 if [[ ! -f "$SUPERVISOR_CONF" ]]; then
-
     fail "Missing $SUPERVISOR_CONF"
-
 fi
 
 # ==============================================================================
 # Remove stale environment export
 # ==============================================================================
 
-rm -f \
-    "/app/.env.export" \
-    2>/dev/null || true
+rm -f "$APP_DIR/.env.export" 2>/dev/null || true
 
 # ==============================================================================
 # Supervisor
@@ -281,7 +252,7 @@ log "Config          : $OPENCODE_CONFIG_DIR"
 log "=================================================="
 
 # ==============================================================================
-# Start supervisor
+# Start Supervisor
 # ==============================================================================
 
 exec /usr/bin/supervisord \
