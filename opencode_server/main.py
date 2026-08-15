@@ -1,55 +1,32 @@
 """
-OpenCode Headless Server
-========================
+BRIGER OpenCode Headless Server
 
 FastAPI bridge between Open WebUI and the OpenCode CLI.
 
-Endpoints:
-    GET  /health
-    GET  /
+Main endpoint:
     POST /tui
-    POST /execute
-    POST /file/read
-    POST /file/write
-    POST /git/status
-    POST /git/worktree
-    POST /lsp/query
 
-The /tui endpoint executes the installed OpenCode CLI in non-interactive
-mode using:
+The /tui endpoint executes:
 
-    opencode run
+    opencode run --auto --dir <workspace> <prompt>
 
-The workspace is restricted to WORKSPACE_DIR.
+All filesystem, shell, and git operations are restricted to WORKSPACE_DIR.
 """
+
+from __future__ import annotations
 
 import os
 import re
-import json
-import shutil
-import subprocess
 import secrets
-
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Generator
+from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    Depends,
-    status,
-    Request,
-)
-
-from fastapi.responses import (
-    JSONResponse,
-    StreamingResponse,
-)
-
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-
 from pydantic import BaseModel, Field
 
 
@@ -70,20 +47,15 @@ OPENCODE_BINARY = os.getenv(
     "opencode",
 )
 
-USERNAME = os.getenv(
+OPENCODE_SERVER_USERNAME = os.getenv(
     "OPENCODE_SERVER_USERNAME",
     "opencode",
 )
 
-PASSWORD = os.getenv(
+OPENCODE_SERVER_PASSWORD = os.getenv(
     "OPENCODE_SERVER_PASSWORD",
     "",
 )
-
-LOG_LEVEL = os.getenv(
-    "LOG_LEVEL",
-    "info",
-).lower()
 
 OPENCODE_TIMEOUT = int(
     os.getenv(
@@ -92,12 +64,18 @@ OPENCODE_TIMEOUT = int(
     )
 )
 
-MAX_OUTPUT_SIZE = int(
+COMMAND_TIMEOUT = int(
     os.getenv(
-        "MAX_OUTPUT_SIZE",
-        "10_000_000",
+        "COMMAND_TIMEOUT",
+        "300",
     )
 )
+
+LOG_LEVEL = os.getenv(
+    "LOG_LEVEL",
+    "info",
+).lower()
+
 
 WORKSPACE_DIR.mkdir(
     parents=True,
@@ -106,23 +84,18 @@ WORKSPACE_DIR.mkdir(
 
 
 # =============================================================================
-# FastAPI App
+# Application
 # =============================================================================
 
 app = FastAPI(
-    title="OpenCode Headless Server",
+    title="BRIGER OpenCode Server",
     description=(
-        "Agentic coding engine API for the Unified AI Suite"
+        "Secure FastAPI bridge for OpenCode "
+        "headless coding tasks."
     ),
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
 )
 
-
-# =============================================================================
-# CORS
-# =============================================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -140,79 +113,30 @@ app.add_middleware(
 )
 
 
-# =============================================================================
-# Authentication
-# =============================================================================
-
 security = HTTPBasic(
-    auto_error=False
+    auto_error=False,
 )
 
 
-def verify_auth(
-    credentials: Optional[HTTPBasicCredentials] = None,
-):
-    """
-    Verify HTTP Basic authentication if a password is configured.
-    """
-
-    # Authentication disabled when password is empty.
-    if not PASSWORD:
-        return True
-
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={
-                "WWW-Authenticate": "Basic"
-            },
-        )
-
-    valid_username = secrets.compare_digest(
-        credentials.username,
-        USERNAME,
-    )
-
-    valid_password = secrets.compare_digest(
-        credentials.password,
-        PASSWORD,
-    )
-
-    if not (
-        valid_username
-        and valid_password
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={
-                "WWW-Authenticate": "Basic"
-            },
-        )
-
-    return True
-
-
 # =============================================================================
-# Pydantic Models
+# Models
 # =============================================================================
 
 class TuiRequest(BaseModel):
     prompt: str = Field(
         ...,
         min_length=1,
-        description="Natural language prompt to process",
+        description="Natural-language coding request",
     )
 
     stream: bool = Field(
         default=False,
-        description="Enable streaming response",
+        description="Return Server-Sent Events",
     )
 
-    workspace: str = Field(
-        default=str(WORKSPACE_DIR),
-        description="Working directory",
+    workspace: Optional[str] = Field(
+        default=None,
+        description="Optional workspace-relative path",
     )
 
     mode: str = Field(
@@ -222,7 +146,7 @@ class TuiRequest(BaseModel):
 
     model: Optional[str] = Field(
         default=None,
-        description="Optional OpenCode model in provider/model format",
+        description="Optional OpenCode model",
     )
 
     agent: Optional[str] = Field(
@@ -234,182 +158,166 @@ class TuiRequest(BaseModel):
 class ExecuteRequest(BaseModel):
     type: str = Field(
         default="shell",
-        description="Execution type",
     )
 
     command: str = Field(
         ...,
         min_length=1,
-        description="Command to execute",
     )
 
     cwd: Optional[str] = Field(
         default=None,
-        description="Working directory",
     )
 
     user: str = Field(
         default="unknown",
-        description="Requesting user",
-    )
-
-    timeout: int = Field(
-        default=60,
-        ge=1,
-        le=600,
     )
 
 
 class FileReadRequest(BaseModel):
-    path: str = Field(
-        ...,
-        description="File path to read",
-    )
+    path: str
 
     offset: int = Field(
         default=0,
         ge=0,
-        description="Line offset",
     )
 
     limit: int = Field(
         default=200,
         ge=1,
-        le=10000,
-        description="Max lines to read",
+        le=5000,
     )
 
-    workspace: str = Field(
-        default=str(WORKSPACE_DIR),
-        description="Workspace root",
-    )
+    workspace: Optional[str] = None
 
 
 class FileWriteRequest(BaseModel):
-    path: str = Field(
-        ...,
-        description="File path to write",
-    )
+    path: str
 
-    content: str = Field(
-        ...,
-        description="Content to write",
-    )
+    content: str
 
-    append: bool = Field(
-        default=False,
-        description="Append mode",
-    )
+    append: bool = False
 
-    workspace: str = Field(
-        default=str(WORKSPACE_DIR),
-        description="Workspace root",
-    )
+    workspace: Optional[str] = None
 
 
 class GitStatusRequest(BaseModel):
-    cwd: Optional[str] = Field(
-        default=None,
-        description="Repository directory",
-    )
+    cwd: Optional[str] = None
 
 
 class GitWorktreeRequest(BaseModel):
-    action: str = Field(
-        ...,
-        description="Action: create, list, or remove",
-    )
+    action: str
 
-    branch: Optional[str] = Field(
-        default=None,
-        description="Branch name",
-    )
+    branch: Optional[str] = None
 
-    path: Optional[str] = Field(
-        default=None,
-        description="Worktree path",
-    )
+    path: Optional[str] = None
 
-    workspace: str = Field(
-        default=str(WORKSPACE_DIR),
-        description="Workspace root",
-    )
+    workspace: Optional[str] = None
 
 
 class LspQueryRequest(BaseModel):
-    file: str = Field(
-        ...,
-        description="File to analyze",
-    )
+    file: str
 
-    type: str = Field(
-        default="symbols",
-        description="Query type",
-    )
+    type: str = "symbols"
 
-    symbol: Optional[str] = Field(
-        default=None,
-        description="Symbol name",
-    )
+    symbol: Optional[str] = None
 
-    workspace: str = Field(
-        default=str(WORKSPACE_DIR),
-        description="Workspace root",
-    )
+    workspace: Optional[str] = None
 
 
 # =============================================================================
-# Utility Functions
+# Authentication
 # =============================================================================
 
-def utc_now() -> str:
+def verify_auth(
+    credentials: Optional[HTTPBasicCredentials],
+) -> bool:
     """
-    Return an ISO-8601 UTC timestamp.
+    Verify Basic Auth when a password is configured.
+
+    If OPENCODE_SERVER_PASSWORD is empty, authentication
+    is disabled.
     """
 
-    return (
-        datetime.now(timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
+    if not OPENCODE_SERVER_PASSWORD:
+        return True
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={
+                "WWW-Authenticate": "Basic",
+            },
+        )
+
+    valid_user = secrets.compare_digest(
+        credentials.username,
+        OPENCODE_SERVER_USERNAME,
     )
 
+    valid_password = secrets.compare_digest(
+        credentials.password,
+        OPENCODE_SERVER_PASSWORD,
+    )
+
+    if not (
+        valid_user
+        and valid_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={
+                "WWW-Authenticate": "Basic",
+            },
+        )
+
+    return True
+
+
+# =============================================================================
+# Path Security
+# =============================================================================
 
 def get_workspace(
-    workspace: Optional[str] = None,
+    requested: Optional[str] = None,
 ) -> Path:
     """
-    Return a validated workspace.
+    Resolve a requested workspace.
 
-    The requested workspace must be WORKSPACE_DIR itself or a child
-    directory of WORKSPACE_DIR.
+    The resulting directory must remain inside WORKSPACE_DIR.
     """
 
-    if not workspace:
+    if not requested:
         return WORKSPACE_DIR
 
-    requested = Path(
-        workspace
-    ).expanduser().resolve()
+    candidate = Path(requested)
+
+    if not candidate.is_absolute():
+        candidate = WORKSPACE_DIR / candidate
+
+    candidate = candidate.resolve()
 
     try:
-        requested.relative_to(
+        candidate.relative_to(
             WORKSPACE_DIR
         )
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"Workspace '{workspace}' is outside "
-                f"the allowed workspace '{WORKSPACE_DIR}'."
+                "Requested workspace is outside "
+                "the configured workspace."
             ),
         )
 
-    requested.mkdir(
+    candidate.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    return requested
+    return candidate
 
 
 def resolve_path(
@@ -417,27 +325,22 @@ def resolve_path(
     workspace: Optional[str] = None,
 ) -> Path:
     """
-    Resolve a path while preventing directory traversal.
-
-    Absolute paths are only allowed if they are already inside the
-    configured WORKSPACE_DIR.
+    Resolve a file path while preventing directory traversal.
     """
 
     root = get_workspace(
         workspace
     )
 
-    candidate = Path(
-        path
-    ).expanduser()
+    target = Path(path)
 
-    if not candidate.is_absolute():
-        candidate = root / candidate
+    if not target.is_absolute():
+        target = root / target
 
-    candidate = candidate.resolve()
+    target = target.resolve()
 
     try:
-        candidate.relative_to(
+        target.relative_to(
             root
         )
     except ValueError:
@@ -445,31 +348,30 @@ def resolve_path(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 f"Path '{path}' is outside "
-                f"the workspace '{root}'."
+                "the workspace."
             ),
         )
 
-    return candidate
+    return target
 
 
 # =============================================================================
-# Command Safety
+# Command Security
 # =============================================================================
 
-BLOCKED_COMMANDS = [
-    r"rm\s+-rf\s+/",
-    r"rm\s+-rf\s+/\s*",
-    r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",
-    r"\bmkfs(\.|[\s])",
-    r"\bdd\s+if=.*of=/dev/",
+BLOCKED_COMMAND_PATTERNS = [
+    r"\brm\s+-rf\s+/",
+    r"\brm\s+-fr\s+/",
+    r"\bmkfs(?:\.\w+)?\b",
+    r"\bdd\s+if=.*\bof=/dev/",
     r">\s*/dev/",
     r"\bshutdown\b",
     r"\breboot\b",
     r"\bpoweroff\b",
-    r"curl\s+.*\|\s*sh",
-    r"curl\s+.*\|\s*bash",
-    r"wget\s+.*\|\s*sh",
-    r"wget\s+.*\|\s*bash",
+    r"\bhalt\b",
+    r":\(\)\s*\{\s*:\|:\s*&\s*\};:",
+    r"\bcurl\b[^|]*\|\s*(?:sh|bash)\b",
+    r"\bwget\b[^|]*\|\s*(?:sh|bash)\b",
 ]
 
 BLOCKED_COMMAND_REGEX = [
@@ -477,21 +379,18 @@ BLOCKED_COMMAND_REGEX = [
         pattern,
         re.IGNORECASE,
     )
-    for pattern in BLOCKED_COMMANDS
+    for pattern in BLOCKED_COMMAND_PATTERNS
 ]
 
 
 def is_command_safe(
     command: str,
 ) -> tuple[bool, str]:
-    """
-    Basic command safety filter.
-
-    This is not a substitute for container isolation.
-    """
 
     for pattern in BLOCKED_COMMAND_REGEX:
+
         if pattern.search(command):
+
             return (
                 False,
                 "Command blocked by safety policy.",
@@ -500,13 +399,111 @@ def is_command_safe(
     return True, ""
 
 
+def validate_git_name(
+    value: str,
+    field_name: str,
+) -> str:
+
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} is required.",
+        )
+
+    if len(value) > 200:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} is too long.",
+        )
+
+    if "\x00" in value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}.",
+        )
+
+    if not re.fullmatch(
+        r"[A-Za-z0-9._/\-]+",
+        value,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}.",
+        )
+
+    return value
+
+
+# =============================================================================
+# Subprocess Helpers
+# =============================================================================
+
+def run_process(
+    args: List[str],
+    cwd: Path,
+    timeout: int,
+) -> Dict[str, Any]:
+
+    try:
+
+        result = subprocess.run(
+            args,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=os.environ.copy(),
+        )
+
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "cwd": str(cwd),
+        }
+
+    except subprocess.TimeoutExpired:
+
+        return {
+            "stdout": "",
+            "stderr": (
+                f"Command timed out after "
+                f"{timeout} seconds."
+            ),
+            "exit_code": 124,
+            "cwd": str(cwd),
+        }
+
+    except FileNotFoundError as exc:
+
+        return {
+            "stdout": "",
+            "stderr": str(exc),
+            "exit_code": 127,
+            "cwd": str(cwd),
+        }
+
+    except Exception as exc:
+
+        return {
+            "stdout": "",
+            "stderr": str(exc),
+            "exit_code": 1,
+            "cwd": str(cwd),
+        }
+
+
 def run_shell(
     command: str,
     cwd: Optional[str] = None,
-    timeout: int = 60,
+    timeout: int = COMMAND_TIMEOUT,
 ) -> Dict[str, Any]:
     """
-    Run a shell command inside the allowed workspace.
+    Execute a shell command strictly inside the workspace.
+
+    Shell execution is still inherently powerful, so this endpoint
+    should only be exposed to trusted authenticated clients.
     """
 
     safe, reason = is_command_safe(
@@ -514,6 +511,7 @@ def run_shell(
     )
 
     if not safe:
+
         return {
             "stdout": "",
             "stderr": reason,
@@ -526,6 +524,7 @@ def run_shell(
     )
 
     try:
+
         result = subprocess.run(
             command,
             shell=True,
@@ -535,6 +534,7 @@ def run_shell(
             timeout=timeout,
             executable="/bin/bash",
             env=os.environ.copy(),
+            check=False,
         )
 
         return {
@@ -542,22 +542,22 @@ def run_shell(
             "stderr": result.stderr,
             "exit_code": result.returncode,
             "cwd": str(work_dir),
-            "blocked": False,
         }
 
     except subprocess.TimeoutExpired:
+
         return {
             "stdout": "",
             "stderr": (
                 f"Command timed out after "
-                f"{timeout}s"
+                f"{timeout} seconds."
             ),
             "exit_code": 124,
             "cwd": str(work_dir),
-            "timeout": True,
         }
 
     except Exception as exc:
+
         return {
             "stdout": "",
             "stderr": str(exc),
@@ -567,189 +567,39 @@ def run_shell(
 
 
 # =============================================================================
-# OpenCode Skills
-# =============================================================================
-
-def load_skills() -> tuple[str, int]:
-    """
-    Load both legacy *.md skills and modern:
-        skills/<name>/SKILL.md
-    """
-
-    skills_dir = (
-        OPENCODE_CONFIG_DIR
-        / "skills"
-    )
-
-    if not skills_dir.exists():
-        return "", 0
-
-    skill_files: List[Path] = []
-
-    # Legacy format:
-    # .opencode/skills/name.md
-    skill_files.extend(
-        sorted(
-            skills_dir.glob("*.md")
-        )
-    )
-
-    # Modern OpenCode format:
-    # .opencode/skills/name/SKILL.md
-    skill_files.extend(
-        sorted(
-            skills_dir.glob(
-                "*/SKILL.md"
-            )
-        )
-    )
-
-    sections: List[str] = []
-
-    for skill_file in skill_files:
-        try:
-            content = skill_file.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )
-
-            sections.append(
-                f"\n\n--- "
-                f"{skill_file.relative_to(skills_dir)} "
-                f"---\n"
-            )
-
-            sections.append(
-                content
-            )
-
-        except OSError:
-            continue
-
-    return (
-        "".join(sections),
-        len(skill_files),
-    )
-
-
-# =============================================================================
-# OpenCode Prompt
-# =============================================================================
-
-def build_full_prompt(
-    req: TuiRequest,
-) -> str:
-    """
-    Build the prompt sent to OpenCode.
-    """
-
-    workspace = get_workspace(
-        req.workspace
-    )
-
-    skills_context, _ = load_skills()
-
-    prompt = f"""
-You are the OpenCode Agent running inside the BRIGER
-headless coding environment.
-
-WORKSPACE:
-{workspace}
-
-You MUST operate only inside this workspace.
-
-## Capabilities
-
-You can:
-- inspect the repository
-- read files
-- modify files
-- execute project commands
-- run tests
-- inspect git status
-- use available OpenCode skills
-
-## Safety
-
-- Do not expose secrets or credentials.
-- Do not modify files outside the workspace.
-- Do not perform destructive system-level operations.
-- Before irreversible/destructive operations, explain what you intend to do.
-- Prefer minimal, targeted changes.
-- Run appropriate tests after making changes.
-- Inspect existing code before modifying it.
-
-## GodMode
-
-If GodMode skills are available, follow the applicable
-workflow defined by those skills.
-
-{skills_context}
-
-## User Request
-
-{req.prompt}
-
-## Final Response
-
-After completing the task:
-1. Summarize what you changed.
-2. List the files changed.
-3. Report tests/checks that were run.
-4. Report any remaining problems.
-"""
-
-    return prompt.strip()
-
-
-# =============================================================================
-# OpenCode Command
+# OpenCode
 # =============================================================================
 
 def build_opencode_command(
-    req: TuiRequest,
+    prompt: str,
+    workspace: Path,
+    model: Optional[str] = None,
+    agent: Optional[str] = None,
 ) -> List[str]:
-    """
-    Build the current OpenCode CLI command.
-
-    Current OpenCode supports:
-        opencode run
-        --dir
-        --format
-        --model
-        --agent
-    """
-
-    workspace = get_workspace(
-        req.workspace
-    )
-
-    prompt = build_full_prompt(
-        req
-    )
 
     command = [
         OPENCODE_BINARY,
         "run",
+        "--auto",
         "--dir",
         str(workspace),
         "--format",
         "json",
     ]
 
-    if req.model:
+    if model:
         command.extend(
             [
                 "--model",
-                req.model,
+                model,
             ]
         )
 
-    if req.agent:
+    if agent:
         command.extend(
             [
                 "--agent",
-                req.agent,
+                agent,
             ]
         )
 
@@ -760,265 +610,51 @@ def build_opencode_command(
     return command
 
 
-# =============================================================================
-# OpenCode JSON Parsing
-# =============================================================================
-
-def extract_content(
-    event: Any,
-) -> str:
-    """
-    Extract useful text from an OpenCode JSON event.
-
-    OpenCode's JSON format is event based, so this deliberately
-    handles several possible event shapes.
-    """
-
-    if isinstance(event, str):
-        return event
-
-    if not isinstance(event, dict):
-        return ""
-
-    # Direct content fields.
-    for key in (
-        "content",
-        "text",
-        "message",
-    ):
-        value = event.get(key)
-
-        if isinstance(value, str):
-            return value
-
-    # Nested part.
-    part = event.get(
-        "part"
-    )
-
-    if isinstance(part, dict):
-        for key in (
-            "text",
-            "content",
-        ):
-            value = part.get(key)
-
-            if isinstance(value, str):
-                return value
-
-    # Nested message.
-    message = event.get(
-        "message"
-    )
-
-    if isinstance(message, dict):
-        for key in (
-            "text",
-            "content",
-        ):
-            value = message.get(key)
-
-            if isinstance(value, str):
-                return value
-
-    return ""
-
-
-def parse_opencode_output(
-    stdout: str,
-) -> str:
-    """
-    Convert OpenCode JSONL output into readable assistant text.
-    """
-
-    output: List[str] = []
-
-    for line in stdout.splitlines():
-        line = line.strip()
-
-        if not line:
-            continue
-
-        try:
-            event = json.loads(
-                line
-            )
-
-            content = extract_content(
-                event
-            )
-
-            if content:
-                output.append(
-                    content
-                )
-
-        except json.JSONDecodeError:
-            # Fallback for non-JSON output.
-            output.append(
-                line
-            )
-
-    return "\n".join(
-        output
-    ).strip()
-
-
-# =============================================================================
-# OpenCode Non-Streaming Execution
-# =============================================================================
-
-def run_opencode(
-    req: TuiRequest,
+def execute_opencode(
+    prompt: str,
+    workspace: Path,
+    model: Optional[str] = None,
+    agent: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute OpenCode in non-interactive mode.
-    """
-
-    workspace = get_workspace(
-        req.workspace
-    )
 
     command = build_opencode_command(
-        req
+        prompt=prompt,
+        workspace=workspace,
+        model=model,
+        agent=agent,
     )
 
-    try:
-        result = subprocess.run(
-            command,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=OPENCODE_TIMEOUT,
-            env=os.environ.copy(),
-        )
+    result = run_process(
+        command,
+        cwd=workspace,
+        timeout=OPENCODE_TIMEOUT,
+    )
 
-        stdout = (
-            result.stdout
-            or ""
-        )
+    result["command"] = command[
+        :-1
+    ]
 
-        stderr = (
-            result.stderr
-            or ""
-        )
+    return result
 
-        if len(stdout) > MAX_OUTPUT_SIZE:
-            stdout = stdout[
-                -MAX_OUTPUT_SIZE:
-            ]
-
-        if len(stderr) > MAX_OUTPUT_SIZE:
-            stderr = stderr[
-                -MAX_OUTPUT_SIZE:
-            ]
-
-        content = parse_opencode_output(
-            stdout
-        )
-
-        if not content:
-            content = stdout.strip()
-
-        if not content and stderr:
-            content = (
-                "OpenCode error:\n\n"
-                + stderr
-            )
-
-        return {
-            "content": content,
-            "response": content,
-            "mode": req.mode,
-            "workspace": str(workspace),
-            "success": (
-                result.returncode == 0
-            ),
-            "exit_code": result.returncode,
-            "stderr": stderr,
-            "timestamp": utc_now(),
-        }
-
-    except FileNotFoundError:
-        return {
-            "content": (
-                f"OpenCode executable "
-                f"'{OPENCODE_BINARY}' was not found "
-                f"in PATH."
-            ),
-            "response": (
-                f"OpenCode executable "
-                f"'{OPENCODE_BINARY}' was not found "
-                f"in PATH."
-            ),
-            "mode": req.mode,
-            "workspace": str(workspace),
-            "success": False,
-            "exit_code": 127,
-            "timestamp": utc_now(),
-        }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "content": (
-                "OpenCode execution timed out "
-                f"after {OPENCODE_TIMEOUT} seconds."
-            ),
-            "response": (
-                "OpenCode execution timed out "
-                f"after {OPENCODE_TIMEOUT} seconds."
-            ),
-            "mode": req.mode,
-            "workspace": str(workspace),
-            "success": False,
-            "exit_code": 124,
-            "timeout": True,
-            "timestamp": utc_now(),
-        }
-
-    except Exception as exc:
-        return {
-            "content": (
-                f"OpenCode execution error: "
-                f"{type(exc).__name__}: {exc}"
-            ),
-            "response": (
-                f"OpenCode execution error: "
-                f"{type(exc).__name__}: {exc}"
-            ),
-            "mode": req.mode,
-            "workspace": str(workspace),
-            "success": False,
-            "exit_code": 1,
-            "timestamp": utc_now(),
-        }
-
-
-# =============================================================================
-# OpenCode Streaming
-# =============================================================================
 
 def stream_opencode(
-    req: TuiRequest,
-) -> Generator[str, None, None]:
-    """
-    Stream OpenCode JSON events to Open WebUI as SSE.
-
-    The Open WebUI pipe expects:
-        data: {"content": "..."}
-    """
-
-    workspace = get_workspace(
-        req.workspace
-    )
+    prompt: str,
+    workspace: Path,
+    model: Optional[str] = None,
+    agent: Optional[str] = None,
+) -> Iterator[str]:
 
     command = build_opencode_command(
-        req
+        prompt=prompt,
+        workspace=workspace,
+        model=model,
+        agent=agent,
     )
 
     process = None
 
     try:
+
         process = subprocess.Popen(
             command,
             cwd=str(workspace),
@@ -1026,179 +662,233 @@ def stream_opencode(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True,
             env=os.environ.copy(),
         )
 
         if process.stdout is None:
             yield (
-                "event: error\n"
-                'data: {"content":"Unable to read OpenCode output."}\n\n'
+                "data: {\"error\":"
+                "\"OpenCode produced no output.\"}\n\n"
             )
             return
 
         for line in process.stdout:
 
-            line = line.strip()
+            line = line.rstrip("\n")
 
             if not line:
                 continue
 
-            content = ""
-
-            try:
-                event = json.loads(
-                    line
-                )
-
-                content = extract_content(
-                    event
-                )
-
-            except json.JSONDecodeError:
-                content = line
-
-            if content:
-                payload = json.dumps(
+            yield (
+                "data: "
+                + _json_dumps(
                     {
-                        "content": content
-                    },
-                    ensure_ascii=False,
+                        "content": line,
+                    }
                 )
-
-                yield (
-                    f"data: {payload}\n\n"
-                )
+                + "\n\n"
+            )
 
         return_code = process.wait(
             timeout=OPENCODE_TIMEOUT
         )
 
-        done_payload = json.dumps(
-            {
-                "content": "",
-                "exit_code": return_code,
-                "success": (
-                    return_code == 0
-                ),
-            }
-        )
-
         yield (
-            f"event: done\n"
-            f"data: {done_payload}\n\n"
-        )
-
-    except FileNotFoundError:
-
-        payload = json.dumps(
-            {
-                "content": (
-                    f"OpenCode executable "
-                    f"'{OPENCODE_BINARY}' was not found."
-                )
-            }
-        )
-
-        yield (
-            f"event: error\n"
-            f"data: {payload}\n\n"
+            "data: "
+            + _json_dumps(
+                {
+                    "done": True,
+                    "exit_code": return_code,
+                }
+            )
+            + "\n\n"
         )
 
     except subprocess.TimeoutExpired:
 
         if process is not None:
-            try:
-                process.kill()
-            except Exception:
-                pass
 
-        payload = json.dumps(
-            {
-                "content": (
-                    "OpenCode execution timed out."
-                )
-            }
-        )
+            process.kill()
+
+            process.wait()
 
         yield (
-            f"event: error\n"
-            f"data: {payload}\n\n"
+            "data: "
+            + _json_dumps(
+                {
+                    "error": (
+                        "OpenCode timed out after "
+                        f"{OPENCODE_TIMEOUT} seconds."
+                    ),
+                    "exit_code": 124,
+                }
+            )
+            + "\n\n"
         )
 
     except Exception as exc:
 
         if process is not None:
+
             try:
                 process.kill()
             except Exception:
                 pass
 
-        payload = json.dumps(
-            {
-                "content": (
-                    f"OpenCode error: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-            }
-        )
-
         yield (
-            f"event: error\n"
-            f"data: {payload}\n\n"
+            "data: "
+            + _json_dumps(
+                {
+                    "error": str(exc),
+                    "exit_code": 1,
+                }
+            )
+            + "\n\n"
         )
 
 
-# =============================================================================
-# Health
-# =============================================================================
+def _json_dumps(
+    value: Any,
+) -> str:
 
-@app.get("/health")
-async def health_check():
-    """
-    Health check endpoint.
-    """
+    import json
 
-    opencode_path = shutil.which(
-        OPENCODE_BINARY
+    return json.dumps(
+        value,
+        ensure_ascii=False,
     )
 
-    return {
-        "status": "healthy",
-        "service": "opencode-server",
-        "version": "2.0.0",
-        "timestamp": utc_now(),
-        "workspace": str(WORKSPACE_DIR),
-        "opencode": {
-            "binary": OPENCODE_BINARY,
-            "available": (
-                opencode_path is not None
-            ),
-            "path": opencode_path,
-        },
-    }
+
+# =============================================================================
+# Prompt
+# =============================================================================
+
+def load_skill_context() -> str:
+
+    possible_dirs = [
+        OPENCODE_CONFIG_DIR / "skills",
+        Path("/app/.opencode/skills"),
+        Path("/app/opencode/skills"),
+    ]
+
+    files: List[Path] = []
+
+    for directory in possible_dirs:
+
+        if not directory.exists():
+            continue
+
+        files.extend(
+            directory.glob("*.md")
+        )
+
+        files.extend(
+            directory.glob(
+                "*/SKILL.md"
+            )
+        )
+
+    unique_files = sorted(
+        {
+            path.resolve()
+            for path in files
+            if path.is_file()
+        }
+    )
+
+    if not unique_files:
+        return ""
+
+    sections = []
+
+    for skill_file in unique_files:
+
+        try:
+
+            content = skill_file.read_text(
+                encoding="utf-8"
+            )
+
+            sections.append(
+                f"\n--- SKILL: "
+                f"{skill_file.name} ---\n"
+                f"{content}"
+            )
+
+        except Exception:
+            continue
+
+    return "\n".join(
+        sections
+    )
+
+
+def build_full_prompt(
+    prompt: str,
+    workspace: Path,
+) -> str:
+
+    skills = load_skill_context()
+
+    return f"""
+You are BRIGER's OpenCode coding agent.
+
+WORKSPACE:
+{workspace}
+
+IMPORTANT RULES:
+
+1. Work only inside the supplied workspace.
+2. Inspect the repository before modifying files.
+3. Make minimal, targeted changes.
+4. Run relevant tests after modifications.
+5. Do not expose API keys, passwords, tokens, or other secrets.
+6. Do not delete the repository.
+7. Do not push to a remote Git repository unless explicitly requested.
+8. Do not modify files outside the workspace.
+9. Explain what you changed and what tests were run.
+
+If a task is ambiguous, inspect the repository and make the safest reasonable interpretation.
+
+{skills}
+
+USER REQUEST:
+{prompt}
+""".strip()
 
 
 # =============================================================================
-# Root
+# API
 # =============================================================================
 
 @app.get("/")
-async def root():
-    """
-    Root endpoint.
-    """
+async def root() -> Dict[str, str]:
 
     return {
-        "message": "OpenCode Headless Server",
-        "version": "2.0.0",
+        "message": "BRIGER OpenCode Server",
         "docs": "/docs",
         "health": "/health",
     }
 
 
+@app.get("/health")
+async def health() -> Dict[str, Any]:
+
+    return {
+        "status": "healthy",
+        "service": "briger-opencode-server",
+        "version": "2.0.0",
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "workspace": str(
+            WORKSPACE_DIR
+        ),
+    }
+
+
 # =============================================================================
-# TUI / OpenCode Agent
+# TUI / OpenCode execution
 # =============================================================================
 
 @app.post("/tui")
@@ -1208,28 +898,29 @@ async def tui_process(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Process a natural-language prompt through OpenCode.
-    """
 
     verify_auth(
         credentials
     )
 
-    if not req.prompt.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt cannot be empty.",
-        )
-
-    # Validate workspace before starting OpenCode.
-    get_workspace(
+    workspace = get_workspace(
         req.workspace
     )
 
+    full_prompt = build_full_prompt(
+        req.prompt,
+        workspace,
+    )
+
     if req.stream:
+
         return StreamingResponse(
-            stream_opencode(req),
+            stream_opencode(
+                prompt=full_prompt,
+                workspace=workspace,
+                model=req.model,
+                agent=req.agent,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1238,19 +929,39 @@ async def tui_process(
             },
         )
 
-    result = run_opencode(
-        req
+    result = execute_opencode(
+        prompt=full_prompt,
+        workspace=workspace,
+        model=req.model,
+        agent=req.agent,
     )
 
-    # Preserve useful response for Open WebUI.
-    return JSONResponse(
-        status_code=200,
-        content=result,
-    )
+    if result["exit_code"] != 0:
+
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "OpenCode execution failed.",
+                "stderr": result["stderr"],
+                "stdout": result["stdout"],
+                "exit_code": result["exit_code"],
+            },
+        )
+
+    return {
+        "content": result["stdout"],
+        "stderr": result["stderr"],
+        "exit_code": result["exit_code"],
+        "workspace": str(workspace),
+        "mode": req.mode,
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
 
 
 # =============================================================================
-# Execute Shell Command
+# Shell
 # =============================================================================
 
 @app.post("/execute")
@@ -1260,34 +971,19 @@ async def execute_command(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Execute a shell command inside WORKSPACE_DIR.
-    """
 
     verify_auth(
         credentials
     )
 
-    if req.type != "shell":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported execution "
-                f"type: {req.type}"
-            ),
-        )
-
-    result = run_shell(
-        req.command,
+    return run_shell(
+        command=req.command,
         cwd=req.cwd,
-        timeout=req.timeout,
     )
-
-    return result
 
 
 # =============================================================================
-# File Read
+# Files
 # =============================================================================
 
 @app.post("/file/read")
@@ -1297,9 +993,6 @@ async def file_read(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Read a file from the workspace.
-    """
 
     verify_auth(
         credentials
@@ -1311,6 +1004,7 @@ async def file_read(
     )
 
     if not target.exists():
+
         raise HTTPException(
             status_code=404,
             detail=(
@@ -1320,6 +1014,7 @@ async def file_read(
         )
 
     if not target.is_file():
+
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1329,43 +1024,38 @@ async def file_read(
         )
 
     try:
+
         content = target.read_text(
             encoding="utf-8",
             errors="replace",
         )
 
-        lines = content.splitlines()
+    except OSError as exc:
 
-        snippet = "\n".join(
-            lines[
-                req.offset:
-                req.offset + req.limit
-            ]
-        )
-
-        return {
-            "path": str(target),
-            "content": content,
-            "snippet": snippet,
-            "offset": req.offset,
-            "limit": req.limit,
-            "total_lines": len(lines),
-            "size_bytes": target.stat().st_size,
-        }
-
-    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"Error reading file: "
-                f"{exc}"
-            ),
+            detail=str(exc),
         )
 
+    lines = content.splitlines()
 
-# =============================================================================
-# File Write
-# =============================================================================
+    snippet = "\n".join(
+        lines[
+            req.offset:
+            req.offset + req.limit
+        ]
+    )
+
+    return {
+        "path": str(target),
+        "content": content,
+        "snippet": snippet,
+        "offset": req.offset,
+        "limit": req.limit,
+        "total_lines": len(lines),
+        "size_bytes": target.stat().st_size,
+    }
+
 
 @app.post("/file/write")
 async def file_write(
@@ -1374,9 +1064,6 @@ async def file_write(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Write or append to a workspace file.
-    """
 
     verify_auth(
         credentials
@@ -1388,6 +1075,7 @@ async def file_write(
     )
 
     try:
+
         target.parent.mkdir(
             parents=True,
             exist_ok=True,
@@ -1403,33 +1091,32 @@ async def file_write(
             mode,
             encoding="utf-8",
         ) as file:
+
             file.write(
                 req.content
             )
 
-        return {
-            "path": str(target),
-            "bytes_written": len(
-                req.content.encode(
-                    "utf-8"
-                )
-            ),
-            "append": req.append,
-            "success": True,
-        }
+    except OSError as exc:
 
-    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"Error writing file: "
-                f"{exc}"
-            ),
+            detail=str(exc),
         )
+
+    return {
+        "path": str(target),
+        "bytes_written": len(
+            req.content.encode(
+                "utf-8"
+            )
+        ),
+        "append": req.append,
+        "success": True,
+    }
 
 
 # =============================================================================
-# Git Status
+# Git
 # =============================================================================
 
 @app.post("/git/status")
@@ -1439,9 +1126,6 @@ async def git_status(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Get Git status for a repository.
-    """
 
     verify_auth(
         credentials
@@ -1451,113 +1135,59 @@ async def git_status(
         req.cwd
     )
 
-    result = run_shell(
-        "git status --short --branch",
-        cwd=str(cwd),
+    status_result = run_process(
+        [
+            "git",
+            "status",
+            "--short",
+            "--branch",
+        ],
+        cwd=cwd,
+        timeout=60,
     )
 
-    log_result = run_shell(
-        "git log --oneline -5",
-        cwd=str(cwd),
+    log_result = run_process(
+        [
+            "git",
+            "log",
+            "--oneline",
+            "-5",
+        ],
+        cwd=cwd,
+        timeout=60,
     )
 
-    branch_result = run_shell(
-        "git branch --show-current",
-        cwd=str(cwd),
+    branch_result = run_process(
+        [
+            "git",
+            "branch",
+            "--show-current",
+        ],
+        cwd=cwd,
+        timeout=60,
     )
 
     return {
         "cwd": str(cwd),
-        "branch": (
-            branch_result["stdout"]
-            .strip()
-        ),
-        "status": result["stdout"],
+        "branch": branch_result[
+            "stdout"
+        ].strip(),
+        "status": status_result[
+            "stdout"
+        ],
         "recent_commits": (
             log_result["stdout"]
             .strip()
             .splitlines()
-            if log_result["stdout"]
+            if log_result["stdout"].strip()
             else []
         ),
         "is_git_repo": (
-            result["exit_code"] == 0
+            status_result[
+                "exit_code"
+            ] == 0
         ),
     }
-
-
-# =============================================================================
-# Git Worktree
-# =============================================================================
-
-def validate_git_name(
-    value: str,
-    field: str,
-) -> str:
-    """
-    Validate branch/worktree input before passing it to Git.
-
-    We also use subprocess argument arrays below, so shell injection
-    is avoided.
-    """
-
-    if not value:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field} is required.",
-        )
-
-    if (
-        len(value) > 255
-        or "\x00" in value
-        or "\n" in value
-        or "\r" in value
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid {field}.",
-        )
-
-    return value
-
-
-def run_git(
-    args: List[str],
-    cwd: Path,
-) -> Dict[str, Any]:
-    """
-    Execute Git without shell=True.
-
-    This prevents branch/path input from becoming shell syntax.
-    """
-
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                *args,
-            ],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=os.environ.copy(),
-        )
-
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.returncode,
-            "cwd": str(cwd),
-        }
-
-    except Exception as exc:
-        return {
-            "stdout": "",
-            "stderr": str(exc),
-            "exit_code": 1,
-            "cwd": str(cwd),
-        }
 
 
 @app.post("/git/worktree")
@@ -1567,9 +1197,6 @@ async def git_worktree(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Manage Git worktrees safely.
-    """
 
     verify_auth(
         credentials
@@ -1580,8 +1207,7 @@ async def git_worktree(
     )
 
     worktree_base = (
-        workspace
-        / ".worktrees"
+        workspace / ".worktrees"
     )
 
     worktree_base.mkdir(
@@ -1589,84 +1215,83 @@ async def git_worktree(
         exist_ok=True,
     )
 
-    if req.action == "list":
+    action = req.action.lower()
 
-        result = run_git(
+    if action == "list":
+
+        result = run_process(
             [
+                "git",
                 "worktree",
                 "list",
                 "--porcelain",
             ],
-            workspace,
+            cwd=workspace,
+            timeout=60,
         )
 
         return {
             "action": "list",
-            "worktrees": result["stdout"],
-            "exit_code": result["exit_code"],
+            "worktrees": result[
+                "stdout"
+            ],
+            "stderr": result[
+                "stderr"
+            ],
+            "exit_code": result[
+                "exit_code"
+            ],
         }
 
-    if req.action == "create":
-
-        if not req.branch:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "branch is required "
-                    "for create"
-                ),
-            )
-
-        if not req.path:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "path is required "
-                    "for create"
-                ),
-            )
+    if action == "create":
 
         branch = validate_git_name(
-            req.branch,
+            req.branch or "",
             "branch",
         )
 
-        # Worktree MUST stay inside:
-        # /app/workspace/.worktrees
-        target_path = resolve_path(
-            req.path,
-            str(worktree_base),
+        path_name = validate_git_name(
+            req.path or "",
+            "path",
         )
 
-        if target_path == worktree_base:
+        target_path = (
+            worktree_base
+            / path_name
+        ).resolve()
+
+        try:
+            target_path.relative_to(
+                worktree_base.resolve()
+            )
+        except ValueError:
+
             raise HTTPException(
-                status_code=400,
+                status_code=403,
                 detail="Invalid worktree path.",
             )
 
         if target_path.exists():
+
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Worktree already exists: "
-                    f"{target_path}"
+                    "Worktree path already "
+                    "exists."
                 ),
             )
 
-        target_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        result = run_git(
+        result = run_process(
             [
+                "git",
                 "worktree",
                 "add",
                 str(target_path),
                 "-b",
                 branch,
             ],
-            workspace,
+            cwd=workspace,
+            timeout=120,
         )
 
         return {
@@ -1676,36 +1301,39 @@ async def git_worktree(
             "result": result,
         }
 
-    if req.action == "remove":
+    if action == "remove":
 
-        if not req.path:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "path is required "
-                    "for remove"
-                ),
-            )
-
-        target_path = resolve_path(
-            req.path,
-            str(worktree_base),
+        path_name = validate_git_name(
+            req.path or "",
+            "path",
         )
 
-        if target_path == worktree_base:
+        target_path = (
+            worktree_base
+            / path_name
+        ).resolve()
+
+        try:
+            target_path.relative_to(
+                worktree_base.resolve()
+            )
+        except ValueError:
+
             raise HTTPException(
-                status_code=400,
+                status_code=403,
                 detail="Invalid worktree path.",
             )
 
-        result = run_git(
+        result = run_process(
             [
+                "git",
                 "worktree",
                 "remove",
                 str(target_path),
                 "--force",
             ],
-            workspace,
+            cwd=workspace,
+            timeout=120,
         )
 
         return {
@@ -1717,14 +1345,14 @@ async def git_worktree(
     raise HTTPException(
         status_code=400,
         detail=(
-            f"Unknown action: "
+            f"Unknown worktree action: "
             f"{req.action}"
         ),
     )
 
 
 # =============================================================================
-# LSP / Symbol Query
+# LSP-like fallback
 # =============================================================================
 
 @app.post("/lsp/query")
@@ -1734,11 +1362,6 @@ async def lsp_query(
         HTTPBasicCredentials
     ] = Depends(security),
 ):
-    """
-    Lightweight source-code symbol extraction.
-
-    This remains a fallback/stub rather than a full LSP implementation.
-    """
 
     verify_auth(
         credentials
@@ -1750,6 +1373,7 @@ async def lsp_query(
     )
 
     if not target.exists():
+
         raise HTTPException(
             status_code=404,
             detail=(
@@ -1759,155 +1383,112 @@ async def lsp_query(
         )
 
     if not target.is_file():
+
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Path is not a file: "
-                f"{req.file}"
-            ),
+            detail="Path is not a file.",
         )
 
-    try:
-        content = target.read_text(
-            encoding="utf-8",
-            errors="replace",
+    content = target.read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    lines = content.splitlines()
+
+    symbols: List[
+        Dict[str, Any]
+    ] = []
+
+    if target.suffix in (
+        ".py",
+        ".pyw",
+    ):
+
+        pattern = re.compile(
+            r"^\s*"
+            r"(async\s+def|def|class)"
+            r"\s+([A-Za-z_]\w*)"
         )
 
-        lines = content.splitlines()
-
-        symbols: List[
-            Dict[str, Any]
-        ] = []
-
-        # Python
-        if target.suffix.lower() in (
-            ".py",
-            ".pyw",
+        for number, line in enumerate(
+            lines,
+            start=1,
         ):
 
-            pattern = re.compile(
-                r"^\s*"
-                r"(class|def|async\s+def)"
-                r"\s+([A-Za-z_]\w*)"
+            match = pattern.match(
+                line
             )
 
-            for line_number, line in enumerate(
-                lines,
-                1,
-            ):
+            if match:
 
-                match = pattern.match(
-                    line
+                symbols.append(
+                    {
+                        "line": number,
+                        "name": match.group(2),
+                        "text": line.strip(),
+                        "type": match.group(1),
+                    }
                 )
 
-                if match:
-                    symbols.append(
-                        {
-                            "line": line_number,
-                            "name": match.group(2),
-                            "text": line.strip(),
-                            "type": "python",
-                        }
-                    )
+    elif target.suffix in (
+        ".js",
+        ".ts",
+        ".jsx",
+        ".tsx",
+    ):
 
-        # JavaScript / TypeScript
-        elif target.suffix.lower() in (
-            ".js",
-            ".ts",
-            ".jsx",
-            ".tsx",
-        ):
-
-            patterns = [
-                re.compile(
-                    r"^\s*"
-                    r"(?:export\s+)?"
-                    r"(class|function)"
-                    r"\s+([A-Za-z_$][\w$]*)"
-                ),
-                re.compile(
-                    r"^\s*"
-                    r"(?:export\s+)?"
-                    r"(const|let|var)"
-                    r"\s+([A-Za-z_$][\w$]*)"
-                ),
-            ]
-
-            for line_number, line in enumerate(
-                lines,
-                1,
-            ):
-
-                for pattern in patterns:
-
-                    match = pattern.match(
-                        line
-                    )
-
-                    if match:
-                        symbols.append(
-                            {
-                                "line": line_number,
-                                "name": match.group(2),
-                                "text": line.strip(),
-                                "type": "javascript",
-                            }
-                        )
-                        break
-
-        if req.symbol:
-            symbols = [
-                symbol
-                for symbol in symbols
-                if symbol["name"]
-                == req.symbol
-            ]
-
-        return {
-            "file": str(target),
-            "query_type": req.type,
-            "symbol": req.symbol,
-            "total_lines": len(lines),
-            "symbols_found": len(symbols),
-            "symbols": symbols[:100],
-            "note": (
-                "Full LSP integration requires "
-                "language-specific LSP servers."
-            ),
-        }
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"LSP query error: "
-                f"{exc}"
-            ),
+        pattern = re.compile(
+            r"^\s*"
+            r"(?:export\s+)?"
+            r"(?:async\s+)?"
+            r"(function|class)"
+            r"\s+([A-Za-z_$][\w$]*)"
         )
 
+        for number, line in enumerate(
+            lines,
+            start=1,
+        ):
 
-# =============================================================================
-# Global Exception Handler
-# =============================================================================
+            match = pattern.match(
+                line
+            )
 
-@app.exception_handler(Exception)
-async def unhandled_exception(
-    request: Request,
-    exc: Exception,
-):
-    """
-    Return a consistent JSON error.
-    """
+            if match:
 
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "detail": str(exc),
-            "path": request.url.path,
-            "timestamp": utc_now(),
-        },
-    )
+                symbols.append(
+                    {
+                        "line": number,
+                        "name": match.group(2),
+                        "text": line.strip(),
+                        "type": match.group(1),
+                    }
+                )
+
+    if req.symbol:
+
+        symbols = [
+            symbol
+            for symbol in symbols
+            if symbol.get(
+                "name"
+            ) == req.symbol
+        ]
+
+    return {
+        "file": str(target),
+        "query_type": req.type,
+        "symbol": req.symbol,
+        "total_lines": len(lines),
+        "symbols_found": len(symbols),
+        "symbols": symbols[:100],
+        "note": (
+            "Fallback symbol parser. "
+            "Install language-specific "
+            "LSP servers for full LSP support."
+        ),
+    }
 
 
 # =============================================================================
@@ -1918,6 +1499,11 @@ if __name__ == "__main__":
 
     import uvicorn
 
+    host = os.getenv(
+        "OPENCODE_SERVER_HOSTNAME",
+        "0.0.0.0",
+    )
+
     port = int(
         os.getenv(
             "OPENCODE_SERVER_PORT",
@@ -1925,13 +1511,9 @@ if __name__ == "__main__":
         )
     )
 
-    host = os.getenv(
-        "OPENCODE_SERVER_HOSTNAME",
-        "0.0.0.0",
-    )
-
     uvicorn.run(
         app,
         host=host,
         port=port,
+        log_level=LOG_LEVEL,
     )
