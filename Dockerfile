@@ -140,7 +140,9 @@ RUN groupadd --system --gid 1000 appuser \
         appuser \
     && chown -R appuser:appuser /app \
     && chown -R appuser:appuser /var/log/supervisor \
+    && chown -R appuser:appuser /etc/supervisor/conf.d \
     && chown appuser:appuser /var/run
+
 
 # ============================================================
 # Runtime configuration
