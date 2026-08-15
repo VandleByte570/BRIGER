@@ -83,7 +83,8 @@ COPY config/opencode.json \
 
 COPY config/supervisord.conf \
     /etc/supervisor/conf.d/supervisord.conf
-Run test -f /etc/supervisor/conf.d/supervisord.conf && \echo "BRIGER: supervisord.conf installed successfully"
+RUN test -f /etc/supervisor/conf.d/supervisord.conf && \
+    echo "BRIGER: supervisord.conf installed successfully"
 
 COPY config/openwebui.env.example \
     /app/config/openwebui.env.example
