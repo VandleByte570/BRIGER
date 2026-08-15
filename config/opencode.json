@@ -1,41 +1,45 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "_comment": "OpenCode configuration for Unified AI Suite. Auto-generated at container startup.",
+
   "server": {
     "port": 4096,
     "hostname": "0.0.0.0",
+    "mdns": false,
     "cors": [
       "http://localhost:8080",
       "http://127.0.0.1:8080",
       "http://localhost:7860",
       "http://127.0.0.1:7860"
-    ],
-    "mdns": false
+    ]
   },
-  "permission": {
-    "edit": "ask",
-    "bash": "ask",
-    "write": "ask",
-    "delete": "ask",
-    "git": "ask"
-  },
+
   "skills": [
-    "/app/.opencode/skills/godmode_define.md",
-    "/app/.opencode/skills/godmode_plan.md",
-    "/app/.opencode/skills/godmode_execute.md",
-    "/app/.opencode/skills/godmode_review.md",
-    "/app/.opencode/skills/godmode_ship.md"
+    "/app/.opencode/skills"
   ],
+
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "write": "allow",
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lsp": "allow",
+    "skill": "allow",
+    "task": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": "deny",
+    "git": "allow"
+  },
+
   "workspace": "/app/workspace",
-  "log_level": "info",
+
   "git": {
     "auto_commit": false,
     "worktree_base": "/app/workspace/.worktrees"
   },
-  "safety": {
-    "require_confirmation_before_destructive_operations": true,
-    "confirm_before_git_push": true,
-    "confirm_before_large_deletions": true,
-    "max_file_size_mb": 10
-  }
+
+  "log_level": "info"
 }
