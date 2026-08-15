@@ -6,10 +6,18 @@ set -Eeuo pipefail
 # BRIGER ENTRYPOINT
 # ==============================================================================
 
+# Default application directory. Many environments (including Hugging Face Spaces)
+# mount the repository at /workspace — prefer that when available unless the user
+# explicitly sets APP_DIR.
 APP_DIR="${APP_DIR:-/app}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
 
-OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/app/.opencode}"
+if [[ -d "/workspace" && "${APP_DIR}" == "/app" ]]; then
+    APP_DIR="/workspace"
+fi
+
+WORKSPACE_DIR="${WORKSPACE_DIR:-$APP_DIR/workspace}"
+
+OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$APP_DIR/.opencode}"
 
 OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
 OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
