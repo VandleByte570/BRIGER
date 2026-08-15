@@ -1,88 +1,106 @@
 # =============================================================================
-# Unified AI Suite: Open WebUI + OpenCode + GodMode Engine
-# =============================================================================
-# Production-ready multi-stage Dockerfile for CPU-only deployments.
-# Compatible with: Docker, Docker Compose, Hugging Face Spaces (CPU Standard)
-#
-# Architecture:
-#   - Open WebUI (Port 8080/7860): Central UI, model routing, chat interface
-#   - OpenCode Server (Port 4096): Headless terminal/file agentic coding engine
-#   - GodMode Engine: 5-stage gated workflow via OpenCode skills
+# BRIGER
+# Open WebUI + OpenCode + FastAPI Bridge
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# STAGE 1: Base System Dependencies
-# -----------------------------------------------------------------------------
 FROM python:3.11-slim-bookworm AS base
 
-LABEL maintainer="Unified AI Suite"
-LABEL description="Open WebUI + OpenCode + GodMode Engine"
-LABEL version="1.0.0"
+LABEL maintainer="BRIGER"
+LABEL description="BRIGER - Open WebUI + OpenCode"
+LABEL version="2.0.0"
 
-# Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies required by both Open WebUI and OpenCode
+# =============================================================================
+# System dependencies
+# =============================================================================
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
-    pandoc \
     gcc \
     g++ \
-    netcat-openbsd \
+    python3-dev \
     curl \
     jq \
-    python3-dev \
+    ca-certificates \
+    supervisor \
+    tini \
+    nodejs \
+    npm \
     ffmpeg \
+    pandoc \
     libsm6 \
     libxext6 \
     libgl1 \
-    nodejs \
-    npm \
-    supervisor \
-    ca-certificates \
-    tini \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    && rm -rf /var/lib/apt/lists/* \
+    /tmp/* \
+    /var/tmp/*
 
-# -----------------------------------------------------------------------------
-# STAGE 2: Install Open WebUI (Python stack)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Open WebUI
+# =============================================================================
+
 FROM base AS openwebui-builder
 
-# Install Open WebUI from PyPI (includes pre-built frontend static files)
-RUN pip install --no-cache-dir "open-webui>=0.6.0,<1.0.0"
+RUN pip install --no-cache-dir \
+    "open-webui>=0.6.0,<1.0.0"
 
-# -----------------------------------------------------------------------------
-# STAGE 3: Install OpenCode CLI (Node.js stack)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# OpenCode
+# =============================================================================
+
 FROM base AS opencode-builder
 
-# Install OpenCode CLI globally via npm
-RUN npm install -g opencode-ai && \
-    opencode --version
+RUN npm install -g opencode-ai \
+    && opencode --version
 
-# -----------------------------------------------------------------------------
-# STAGE 4: Final Assembly
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Final image
+# =============================================================================
+
 FROM base AS final
 
-# Copy Python packages from openwebui-builder
-COPY --from=openwebui-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=openwebui-builder /usr/local/bin/open-webui /usr/local/bin/open-webui
+# -----------------------------------------------------------------------------
+# Python / Open WebUI
+# -----------------------------------------------------------------------------
 
-# Copy Node modules and OpenCode binary from opencode-builder
-COPY --from=opencode-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=opencode-builder /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=openwebui-builder \
+    /usr/local/lib/python3.11/site-packages \
+    /usr/local/lib/python3.11/site-packages
 
-# Create application directories
-RUN mkdir -p /app/data \
+COPY --from=openwebui-builder \
+    /usr/local/bin/open-webui \
+    /usr/local/bin/open-webui
+
+# -----------------------------------------------------------------------------
+# Node / OpenCode
+# -----------------------------------------------------------------------------
+
+COPY --from=opencode-builder \
+    /usr/local/lib/node_modules \
+    /usr/local/lib/node_modules
+
+COPY --from=opencode-builder \
+    /usr/local/bin/opencode \
+    /usr/local/bin/opencode
+
+# -----------------------------------------------------------------------------
+# Application directories
+# -----------------------------------------------------------------------------
+
+RUN mkdir -p \
+    /app/data \
     /app/config \
     /app/.opencode/skills \
     /app/.opencode/plugins \
+    /app/.cache/opencode \
+    /app/.config/opencode \
+    /app/.local/share/opencode \
     /app/scripts \
     /app/open_webui/functions \
     /app/open_webui/tools \
@@ -92,78 +110,170 @@ RUN mkdir -p /app/data \
     /var/log/supervisor \
     /var/run
 
-# Set up OpenCode config directory
+# -----------------------------------------------------------------------------
+# OpenCode environment
+# -----------------------------------------------------------------------------
+
 ENV OPENCODE_CONFIG_DIR=/app/.opencode \
     OPENCODE_CACHE_DIR=/app/.cache/opencode \
     XDG_CONFIG_HOME=/app/.config \
     XDG_CACHE_HOME=/app/.cache \
     XDG_DATA_HOME=/app/.local/share
 
-RUN mkdir -p /app/.config/opencode /app/.cache/opencode /app/.local/share/opencode
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
 
-# Copy configuration files
-COPY config/opencode.json /app/.opencode/opencode.json
-COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY config/openwebui.env.example /app/config/openwebui.env.example
-COPY config/webui_config.json /app/config/webui_config.json
+COPY config/opencode.json \
+    /app/.opencode/opencode.json
 
-# Copy GodMode skills
-COPY .opencode/skills/ /app/.opencode/skills/
+COPY config/supervisord.conf \
+    /etc/supervisor/conf.d/supervisord.conf
 
-# Copy Open WebUI integration functions and tools
-COPY open_webui/functions/ /app/open_webui/functions/
-COPY open_webui/tools/ /app/open_webui/tools/
+COPY config/openwebui.env.example \
+    /app/config/openwebui.env.example
 
-# Copy OpenCode server (Python FastAPI wrapper)
-COPY opencode_server/ /app/opencode_server/
-RUN pip install --no-cache-dir -r /app/opencode_server/requirements.txt
+COPY config/webui_config.json \
+    /app/config/webui_config.json
 
-# Copy scripts
-COPY scripts/build.sh /app/scripts/build.sh
-COPY entrypoint.sh /app/entrypoint.sh
+# -----------------------------------------------------------------------------
+# Skills
+# -----------------------------------------------------------------------------
 
-# Set permissions
-RUN chmod +x /app/entrypoint.sh /app/scripts/build.sh && \
-    chmod 644 /app/.opencode/opencode.json && \
-    chmod 644 /etc/supervisor/conf.d/supervisord.conf
+COPY .opencode/skills/ \
+    /app/.opencode/skills/
 
-# Create non-root user for security
-RUN groupadd -r appuser -g 1000 && \
-    useradd -r -g appuser -u 1000 -d /app -s /bin/bash appuser && \
-    chown -R appuser:appuser /app /var/log/supervisor /var/run
+# -----------------------------------------------------------------------------
+# Open WebUI integrations
+# -----------------------------------------------------------------------------
 
-# Environment variables
+COPY open_webui/functions/ \
+    /app/open_webui/functions/
+
+COPY open_webui/tools/ \
+    /app/open_webui/tools/
+
+# -----------------------------------------------------------------------------
+# BRIGER OpenCode API
+# -----------------------------------------------------------------------------
+
+COPY opencode_server/ \
+    /app/opencode_server/
+
+RUN pip install --no-cache-dir \
+    -r /app/opencode_server/requirements.txt
+
+# -----------------------------------------------------------------------------
+# Scripts
+# -----------------------------------------------------------------------------
+
+COPY scripts/build.sh \
+    /app/scripts/build.sh
+
+COPY entrypoint.sh \
+    /app/entrypoint.sh
+
+# -----------------------------------------------------------------------------
+# Permissions
+# -----------------------------------------------------------------------------
+
+RUN chmod +x \
+        /app/entrypoint.sh \
+        /app/scripts/build.sh \
+    && chmod 644 \
+        /app/.opencode/opencode.json \
+        /etc/supervisor/conf.d/supervisord.conf
+
+# =============================================================================
+# Non-root user
+# =============================================================================
+
+RUN groupadd \
+        --system \
+        --gid 1000 \
+        appuser \
+    && useradd \
+        --system \
+        --uid 1000 \
+        --gid 1000 \
+        --home-dir /app \
+        --shell /bin/bash \
+        appuser \
+    && chown -R \
+        appuser:appuser \
+        /app \
+        /var/log/supervisor \
+        /var/run
+
+# =============================================================================
+# Runtime environment
+# =============================================================================
+
 ENV DATA_DIR=/app/data \
     PORT=8080 \
     HOST=0.0.0.0 \
     OPENCODE_SERVER_PORT=4096 \
     OPENCODE_SERVER_HOSTNAME=0.0.0.0 \
     OPENCODE_SERVER_USERNAME=opencode \
+    OPENCODE_SERVER_PASSWORD="" \
+    WORKSPACE_DIR=/app/workspace \
+    OPENCODE_CONFIG_DIR=/app/.opencode \
+    OPENCODE_TIMEOUT=1800 \
+    COMMAND_TIMEOUT=300 \
     DOCKER=true \
     ENV=prod \
-    WEBUI_NAME="Unified AI Suite" \
+    WEBUI_NAME="BRIGER" \
     ENABLE_SIGNUP=true \
     DEFAULT_MODELS="" \
     SCARF_NO_ANALYTICS=true \
     DO_NOT_TRACK=true \
     ANONYMIZED_TELEMETRY=false \
     WEBUI_SECRET_KEY="" \
-    PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app/opencode_server \
-    PATH="/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app \
+    PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# Expose service ports
-# 8080: Open WebUI (configurable via PORT env var)
-# 7860: Hugging Face Spaces default
-# 4096: OpenCode headless server
-EXPOSE 8080 7860 4096
+# =============================================================================
+# Ports
+# =============================================================================
 
-# Volume for persistent data
-VOLUME ["/app/data", "/app/workspace", "/app/logs"]
+EXPOSE 8080
+EXPOSE 7860
+EXPOSE 4096
 
-# Health check for Open WebUI
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
-    CMD curl -fsS http://localhost:${PORT:-8080}/health > /dev/null || exit 1
+# =============================================================================
+# Persistent data
+# =============================================================================
 
-# Use tini as init system for proper signal handling
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/app/entrypoint.sh"]
+VOLUME [
+    "/app/data",
+    "/app/workspace",
+    "/app/logs"
+]
+
+# =============================================================================
+# Health check
+# =============================================================================
+
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s \
+    --start-period=90s \
+    --retries=5 \
+    CMD-SHELL \
+    curl -fsS \
+    "http://127.0.0.1:$${PORT:-8080}/health" \
+    >/dev/null \
+    || exit 1
+
+# =============================================================================
+# Init
+# =============================================================================
+
+ENTRYPOINT [
+    "/usr/bin/tini",
+    "--"
+]
+
+CMD [
+    "/app/entrypoint.sh"
+]
