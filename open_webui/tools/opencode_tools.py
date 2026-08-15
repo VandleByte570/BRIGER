@@ -194,4 +194,88 @@ class Tools:
         """
         work_dir = cwd or self.valves.WORKSPACE_DIR
         try:
-            async with self._get_client() as
+            async with self._get_client() as client:
+                resp = await client.post(
+                    "/git/status",
+                    json={"cwd": work_dir}
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return json.dumps(data, indent=2)
+        except Exception as e:
+            return f"Error checking git status: {type(e).__name__}: {str(e)}"
+
+    async def opencode_git_worktree(
+        self,
+        action: str = Field(
+            ...,
+            description="Action: create, list, or remove"
+        ),
+        branch: Optional[str] = Field(
+            default=None,
+            description="Branch name for create/remove"
+        ),
+        path: Optional[str] = Field(
+            default=None,
+            description="Path for the worktree"
+        ),
+        __user__: dict = {}
+    ) -> str:
+        """
+        Manage git worktrees for isolated parallel development. Use 'create'
+        to spawn a new worktree, 'list' to see active worktrees, 'remove'
+        to clean up.
+        """
+        try:
+            async with self._get_client() as client:
+                resp = await client.post(
+                    "/git/worktree",
+                    json={
+                        "action": action,
+                        "branch": branch,
+                        "path": path,
+                        "workspace": self.valves.WORKSPACE_DIR
+                    }
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return json.dumps(data, indent=2)
+        except Exception as e:
+            return f"Error managing worktree: {type(e).__name__}: {str(e)}"
+
+    async def opencode_lsp_query(
+        self,
+        file_path: str = Field(
+            ...,
+            description="File to analyze"
+        ),
+        query_type: str = Field(
+            default="symbols",
+            description="Query type: symbols, references, hover, diagnostics"
+        ),
+        symbol: Optional[str] = Field(
+            default=None,
+            description="Symbol name for references/hover queries"
+        ),
+        __user__: dict = {}
+    ) -> str:
+        """
+        Query LSP-based code understanding. Use this to get symbol definitions,
+        find references, type information, or diagnostics for a file.
+        """
+        try:
+            async with self._get_client() as client:
+                resp = await client.post(
+                    "/lsp/query",
+                    json={
+                        "file": file_path,
+                        "type": query_type,
+                        "symbol": symbol,
+                        "workspace": self.valves.WORKSPACE_DIR
+                    }
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return json.dumps(data, indent=2)
+        except Exception as e:
+            return f"Error querying LSP: {type(e).__name__}: {str(e)}"
