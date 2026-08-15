@@ -1,4 +1,4 @@
-# Unified AI Suite
+# BRIGER
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -19,4 +19,4 @@ docker run -d \
   -e OPENAI_API_KEY="sk-..." \
   -v openwebui-data:/app/data \
   -v opencode-workspace:/app/workspace \
-  ghcr.io/yourusername/unified-ai-suite:latest
+  ghcr.io/VandleByte570/BRIGER:latest
