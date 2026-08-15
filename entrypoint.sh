@@ -86,10 +86,6 @@ fi
 SKILL_SOURCE_DIR="$APP_DIR/opencode/skills"
 SKILL_TARGET_DIR="$OPENCODE_CONFIG_DIR/skills"
 
-# ------------------------------------------------------------------------------
-# Install skills from /app/opencode/skills when that directory exists.
-# ------------------------------------------------------------------------------
-
 if [[ -d "$SKILL_SOURCE_DIR" ]]; then
 
     while IFS= read -r -d '' skill_file; do
@@ -97,8 +93,9 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
         skill_name="$(basename "$skill_file")"
         target_file="$SKILL_TARGET_DIR/$skill_name"
 
-        # Do not copy a file onto itself.
-        if [[ "$(realpath "$skill_file")" == "$(realpath "$target_file" 2>/dev/null || true)" ]]; then
+        # Never copy a file onto itself.
+        if [[ -f "$target_file" ]] && \
+           [[ "$(realpath "$skill_file")" == "$(realpath "$target_file")" ]]; then
             log "Skill already installed: $skill_name"
             continue
         fi
@@ -119,21 +116,17 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
 
 fi
 
-# ------------------------------------------------------------------------------
-# Install repository-level skills.
+# ==============================================================================
+# Repository-level skills
 #
-# The Dockerfile already copies:
+# The Dockerfile already places .opencode/skills into:
 #
-#   .opencode/skills/
+#     /app/.opencode/skills
 #
-# into:
+# which is the same directory used as SKILL_TARGET_DIR.
 #
-#   /app/.opencode/skills/
-#
-# which is also the target directory.
-#
-# Therefore, do NOT cp files onto themselves.
-# ------------------------------------------------------------------------------
+# Therefore, do not copy these files again.
+# ==============================================================================
 
 REPOSITORY_SKILL_DIR="$APP_DIR/.opencode/skills"
 
@@ -144,15 +137,9 @@ if [[ -d "$REPOSITORY_SKILL_DIR" ]]; then
         skill_name="$(basename "$skill_file")"
         target_file="$SKILL_TARGET_DIR/$skill_name"
 
-        # Source and target are identical.
-        if [[ "$skill_file" == "$target_file" ]]; then
-            log "Skill already installed: $skill_name"
-            continue
-        fi
-
-        # Extra protection for equivalent paths.
-        if [[ "$(realpath "$skill_file")" == "$(realpath "$target_file" 2>/dev/null || true)" ]]; then
-            log "Skill already installed: $skill_name"
+        if [[ -f "$target_file" ]] && \
+           [[ "$(realpath "$skill_file")" == "$(realpath "$target_file")" ]]; then
+            log "Repository skill already installed: $skill_name"
             continue
         fi
 
@@ -267,10 +254,7 @@ if [[ ! -f "$SUPERVISOR_CONF" ]]; then
 fi
 
 # ==============================================================================
-# Do NOT dump the complete environment.
-#
-# The previous implementation wrote `export` output to disk. That could expose
-# API keys, passwords, tokens, and other secrets.
+# Remove stale environment export
 # ==============================================================================
 
 rm -f \
@@ -282,12 +266,12 @@ rm -f \
 # ==============================================================================
 
 cat <<'BANNER'
-██████╗ ██████╗ ██╗██████╗ ███████╗██████╗ 
+██████╗ ██████╗ ██╗██████╗ ███████╗██████╗
 ██╔══██╗██╔══██╗██║██╔════╝ ██╔════╝██╔══██╗
 ██████╔╝██████╔╝██║██║  ███╗█████╗  ██████╔╝
 ██╔══██╗██╔══██╗██║██║   ██║██╔══╝  ██╔══██╗
 ██████╔╝██║  ██║██║╚██████╔╝███████╗██║  ██║
-╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 BANNER
 
 log "Workspace       : $WORKSPACE_DIR"
