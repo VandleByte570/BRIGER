@@ -1,0 +1,3 @@
+"""
+BRIGER OpenCode Server package.
+"""
