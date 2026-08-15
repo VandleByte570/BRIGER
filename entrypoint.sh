@@ -112,24 +112,25 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
 
 fi
 
-# ==============================================================================
-# Repository .opencode skills
+# ===================================================
+# Repository-level skills
 #
-# These are already copied by the Dockerfile into:
+# These skills are already
+# installed by the Dockerfile in:
+# /app/.opencode/skills
 #
-#     /app/.opencode/skills
+# Do NOT copy them again.
 #
-# DO NOT COPY THEM AGAIN.
-# ==============================================================================
+# ===================================================
 
-if [[ -d "$OPENCODE_CONFIG_DIR/skills" ]]; then
+REPOSITORY_SKILL_DIR="$APP_DIR/.opencode/skills"
+
+if [[ -d "$REPOSITORY_SKILL_DIR" ]]; then
 
     while IFS= read -r -d '' skill_file; do
-
         log "Skill available: $(basename "$skill_file")"
-
     done < <(
-        find "$OPENCODE_CONFIG_DIR/skills" \
+        find "$REPOSITORY_SKILL_DIR" \
             -maxdepth 1 \
             -type f \
             -name "*.md" \
