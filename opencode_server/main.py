@@ -21,7 +21,7 @@ import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +81,10 @@ WORKSPACE_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
+
+# Ensure opencode config directory exists so the server can run standalone
+OPENCODE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+(OPENCODE_CONFIG_DIR / "skills").mkdir(parents=True, exist_ok=True)
 
 
 # =============================================================================
@@ -385,7 +389,7 @@ BLOCKED_COMMAND_REGEX = [
 
 def is_command_safe(
     command: str,
-) -> tuple[bool, str]:
+) -> Tuple[bool, str]:
 
     for pattern in BLOCKED_COMMAND_REGEX:
 
@@ -831,30 +835,30 @@ def build_full_prompt(
     skills = load_skill_context()
 
     return f"""
-You are BRIGER's OpenCode coding agent.
+ You are BRIGER's OpenCode coding agent.
 
-WORKSPACE:
-{workspace}
+ WORKSPACE:
+ {workspace}
 
-IMPORTANT RULES:
+ IMPORTANT RULES:
 
-1. Work only inside the supplied workspace.
-2. Inspect the repository before modifying files.
-3. Make minimal, targeted changes.
-4. Run relevant tests after modifications.
-5. Do not expose API keys, passwords, tokens, or other secrets.
-6. Do not delete the repository.
-7. Do not push to a remote Git repository unless explicitly requested.
-8. Do not modify files outside the workspace.
-9. Explain what you changed and what tests were run.
+ 1. Work only inside the supplied workspace.
+ 2. Inspect the repository before modifying files.
+ 3. Make minimal, targeted changes.
+ 4. Run relevant tests after modifications.
+ 5. Do not expose API keys, passwords, tokens, or other secrets.
+ 6. Do not delete the repository.
+ 7. Do not push to a remote Git repository unless explicitly requested.
+ 8. Do not modify files outside the workspace.
+ 9. Explain what you changed and what tests were run.
 
-If a task is ambiguous, inspect the repository and make the safest reasonable interpretation.
+ If a task is ambiguous, inspect the repository and make the safest reasonable interpretation.
 
-{skills}
+ {skills}
 
-USER REQUEST:
-{prompt}
-""".strip()
+ USER REQUEST:
+ {prompt}
+ """.strip()
 
 
 # =============================================================================
