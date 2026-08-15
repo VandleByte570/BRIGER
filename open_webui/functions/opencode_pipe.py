@@ -1,23 +1,21 @@
 """
-title: OpenCode Agent Pipe
+title: BRIGER OpenCode Pipe
 author: BRIGER
-version: 2.0.0
+version: 2.1.0
 license: MIT
 
-description:
-    Open WebUI Pipe integration for the BRIGER OpenCode server.
-
-requirements:
-    httpx
+Open WebUI Pipe for the BRIGER OpenCode server.
 """
+
+from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Optional, List, Dict, Any
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
-from pydantic import BaseModel, Field
 from fastapi import Request
+from pydantic import BaseModel, Field
 
 
 class Pipe:
@@ -26,53 +24,50 @@ class Pipe:
 
         OPENCODE_SERVER_URL: str = Field(
             default="http://127.0.0.1:4096",
-            description="OpenCode server URL",
+            description="BRIGER OpenCode server URL",
         )
 
         OPENCODE_SERVER_USERNAME: str = Field(
             default="opencode",
-            description="OpenCode username",
+            description="OpenCode server username",
         )
 
         OPENCODE_SERVER_PASSWORD: str = Field(
             default="",
-            description="OpenCode password",
-        )
-
-        GODMODE_ENABLED: bool = Field(
-            default=True,
-            description="Enable GodMode workflow",
-        )
-
-        GODMODE_AUTO_CHECKPOINT: bool = Field(
-            default=True,
-            description="Enable automatic checkpoints",
-        )
-
-        FALLBACK_MODEL: str = Field(
-            default="",
-            description="Fallback Open WebUI model",
-        )
-
-        REQUEST_TIMEOUT: float = Field(
-            default=1800.0,
-            description="OpenCode request timeout",
-        )
-
-        STREAMING_ENABLED: bool = Field(
-            default=True,
-            description="Enable streaming",
+            description="OpenCode server password",
         )
 
         WORKSPACE_DIR: str = Field(
             default="/app/workspace",
-            description="OpenCode workspace",
+            description="BRIGER workspace",
+        )
+
+        REQUEST_TIMEOUT: float = Field(
+            default=1800.0,
+            description="Maximum request time in seconds",
+        )
+
+        CONNECT_TIMEOUT: float = Field(
+            default=10.0,
+            description="Connection timeout",
+        )
+
+        STREAMING_ENABLED: bool = Field(
+            default=True,
+            description="Enable streaming responses",
+        )
+
+        GODMODE_ENABLED: bool = Field(
+            default=True,
+            description="Enable BRIGER GodMode instructions",
         )
 
     def __init__(self):
 
         self.type = "manifold"
+
         self.id = "opencode"
+
         self.name = "opencode/"
 
         self.valves = self.Valves()
@@ -81,20 +76,18 @@ class Pipe:
             httpx.AsyncClient
         ] = None
 
-        self._server_available: Optional[
-            bool
-        ] = None
-
-
     # =========================================================================
-    # HTTP Client
+    # HTTP CLIENT
     # =========================================================================
 
-    def _get_client(
-        self,
-    ) -> httpx.AsyncClient:
+    def _get_client(self) -> httpx.AsyncClient:
 
         if self._client is None:
+
+            timeout = httpx.Timeout(
+                timeout=self.valves.REQUEST_TIMEOUT,
+                connect=self.valves.CONNECT_TIMEOUT,
+            )
 
             auth = None
 
@@ -106,52 +99,18 @@ class Pipe:
                 )
 
             self._client = httpx.AsyncClient(
-                base_url=self.valves.OPENCODE_SERVER_URL,
-                auth=auth,
-                timeout=httpx.Timeout(
-                    self.valves.REQUEST_TIMEOUT,
-                    connect=10.0,
+                base_url=self.valves.OPENCODE_SERVER_URL.rstrip(
+                    "/"
                 ),
+                timeout=timeout,
+                auth=auth,
                 follow_redirects=True,
             )
 
         return self._client
 
-
     # =========================================================================
-    # Health
-    # =========================================================================
-
-    async def _check_server_health(
-        self,
-    ) -> bool:
-
-        try:
-
-            client = self._get_client()
-
-            response = await client.get(
-                "/health",
-                timeout=5.0,
-            )
-
-            if response.status_code < 500:
-
-                self._server_available = True
-
-                return True
-
-        except Exception:
-
-            pass
-
-        self._server_available = False
-
-        return False
-
-
-    # =========================================================================
-    # Models
+    # PIPE LIST
     # =========================================================================
 
     def pipes(
@@ -163,52 +122,145 @@ class Pipe:
                 "id": "opencode-agent",
                 "name": "OpenCode Agent",
                 "description": (
-                    "BRIGER OpenCode Agent with "
-                    "GodMode workflow"
+                    "BRIGER OpenCode coding agent "
+                    "with GodMode workflow."
                 ),
             },
             {
                 "id": "opencode-fast",
                 "name": "OpenCode Fast",
                 "description": (
-                    "OpenCode coding agent without "
-                    "GodMode gating"
+                    "BRIGER OpenCode coding agent "
+                    "without extended GodMode instructions."
                 ),
             },
         ]
 
+    # =========================================================================
+    # HEALTH CHECK
+    # =========================================================================
+
+    async def _check_health(self) -> bool:
+
+        try:
+
+            client = self._get_client()
+
+            response = await client.get(
+                "/health",
+                timeout=httpx.Timeout(
+                    5.0,
+                    connect=3.0,
+                ),
+            )
+
+            return response.is_success
+
+        except Exception:
+
+            return False
 
     # =========================================================================
-    # Prompt Construction
+    # MESSAGE HELPERS
     # =========================================================================
 
-    def _build_simple_prompt(
+    @staticmethod
+    def _content_to_text(
+        content: Any,
+    ) -> str:
+
+        if isinstance(
+            content,
+            str,
+        ):
+            return content
+
+        if isinstance(
+            content,
+            list,
+        ):
+
+            parts = []
+
+            for item in content:
+
+                if isinstance(
+                    item,
+                    str,
+                ):
+
+                    parts.append(item)
+
+                elif isinstance(
+                    item,
+                    dict,
+                ):
+
+                    text = item.get(
+                        "text"
+                    )
+
+                    if text:
+                        parts.append(
+                            str(text)
+                        )
+
+            return "\n".join(parts)
+
+        if content is None:
+            return ""
+
+        return str(content)
+
+    def _conversation_text(
         self,
         messages: List[Dict[str, Any]],
     ) -> str:
 
-        conversation = []
+        parts = []
 
         for message in messages:
 
-            role = message.get(
-                "role",
-                "user",
-            )
+            role = str(
+                message.get(
+                    "role",
+                    "user",
+                )
+            ).upper()
 
-            content = message.get(
-                "content",
-                "",
-            )
+            content = self._content_to_text(
+                message.get(
+                    "content",
+                    "",
+                )
+            ).strip()
 
             if not content:
                 continue
 
-            conversation.append(
-                f"{role.upper()}:\n{content}"
+            parts.append(
+                f"{role}:\n{content}"
             )
 
-        return f"""
+        return "\n\n".join(parts)
+
+    # =========================================================================
+    # GODMODE PROMPT
+    # =========================================================================
+
+    def _build_prompt(
+        self,
+        messages: List[Dict[str, Any]],
+        model_id: str,
+    ) -> str:
+
+        conversation = self._conversation_text(
+            messages
+        )
+
+        if not self.valves.GODMODE_ENABLED:
+
+            return f"""
 You are BRIGER's OpenCode coding agent.
 
 WORKSPACE:
@@ -217,295 +269,322 @@ WORKSPACE:
 Rules:
 
 - Work only inside the workspace.
-- Inspect the repository before changing files.
+- Inspect the repository before editing.
 - Make minimal changes.
 - Run relevant tests.
-- Do not expose secrets.
-- Do not perform destructive system operations.
+- Never expose secrets.
+- Never push to a remote repository unless explicitly requested.
 
-Conversation:
+USER CONVERSATION:
 
-{chr(10).join(conversation)}
+{conversation}
 """.strip()
 
-
-    def _build_godmode_prompt(
-        self,
-        messages: List[Dict[str, Any]],
-        model_id: str,
-    ) -> str:
-
-        if (
-            not self.valves.GODMODE_ENABLED
-            or model_id == "opencode-fast"
-        ):
-
-            return self._build_simple_prompt(
-                messages
-            )
-
-        user_message = ""
-
-        for message in reversed(messages):
-
-            if message.get("role") == "user":
-
-                user_message = message.get(
-                    "content",
-                    "",
-                )
-
-                break
-
-        now = (
-            datetime.now(timezone.utc)
-            .isoformat()
-        )
-
         return f"""
-You are BRIGER's GodMode Engineering Orchestrator.
-
-CURRENT TIME:
-{now}
+You are BRIGER's OpenCode engineering agent.
 
 WORKSPACE:
 {self.valves.WORKSPACE_DIR}
 
-You must follow this engineering workflow:
+CURRENT UTC TIME:
+{datetime.now(timezone.utc).isoformat()}
 
-## Stage 01 — DEFINE
+You must work as a careful software engineer.
 
-- Understand the request.
-- Identify requirements.
-- Identify ambiguity.
-- Produce a definition.
-- Ask for approval if the task requires staged approval.
+## DEFINE
 
-## Stage 02 — PLAN
+Understand the user's actual request.
 
-- Inspect the repository.
-- Identify affected files.
-- Produce an implementation plan.
-- Identify risks and rollback strategy.
+Identify:
 
-## Stage 03 — EXECUTE
+- requirements
+- constraints
+- affected components
+- possible risks
 
-- Implement approved changes.
-- Run appropriate tests.
-- Avoid unnecessary changes.
-- Never expose credentials.
+## PLAN
 
-## Stage 04 — REVIEW
+Before making changes:
 
-- Review the implementation.
-- Check correctness.
-- Check security.
-- Check tests.
-- Identify remaining issues.
+- inspect the repository
+- inspect relevant files
+- understand existing architecture
+- identify the smallest safe change
 
-## Stage 05 — SHIP
+Do not blindly rewrite unrelated files.
 
-- Perform final verification.
-- Summarize changes.
-- Report test results.
-- Do not push remotely unless explicitly requested.
+## EXECUTE
 
-## Safety
+Implement the requested change.
 
-- Do not modify files outside the workspace.
-- Do not expose secrets.
-- Do not delete the repository.
-- Do not use destructive system commands.
-- Do not perform git push unless explicitly requested.
+Rules:
 
-## User Request
+- work only inside the workspace
+- preserve existing functionality
+- avoid unnecessary dependencies
+- do not expose secrets
+- do not modify the host system
+- do not delete the repository
+- do not push to Git remotes unless explicitly requested
 
-{user_message}
+## VERIFY
+
+After modifying files:
+
+- run relevant tests
+- run syntax checks where appropriate
+- inspect changed files
+- fix errors you introduced
+
+## REPORT
+
+At the end, clearly report:
+
+1. files changed
+2. what was fixed
+3. tests/checks performed
+4. remaining problems, if any
+
+USER CONVERSATION:
+
+{conversation}
 """.strip()
 
+    # =========================================================================
+    # RESPONSE PARSING
+    # =========================================================================
+
+    @staticmethod
+    def _extract_text(
+        payload: Any,
+    ) -> str:
+
+        if isinstance(
+            payload,
+            str,
+        ):
+            return payload
+
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            return str(payload)
+
+        for key in (
+            "content",
+            "response",
+            "text",
+            "message",
+            "output",
+        ):
+
+            value = payload.get(
+                key
+            )
+
+            if isinstance(
+                value,
+                str,
+            ) and value:
+
+                return value
+
+        return ""
 
     # =========================================================================
-    # OpenCode API
+    # NON-STREAM REQUEST
     # =========================================================================
 
-    async def _call_opencode_api(
+    async def _request_once(
         self,
         prompt: str,
-        stream: bool = True,
+    ) -> str:
+
+        client = self._get_client()
+
+        response = await client.post(
+            "/tui",
+            json={
+                "prompt": prompt,
+                "stream": False,
+                "workspace": self.valves.WORKSPACE_DIR,
+                "mode": "headless",
+            },
+        )
+
+        response.raise_for_status()
+
+        try:
+
+            payload = response.json()
+
+        except json.JSONDecodeError:
+
+            return response.text
+
+        text = self._extract_text(
+            payload
+        )
+
+        if text:
+            return text
+
+        return json.dumps(
+            payload,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # =========================================================================
+    # STREAM REQUEST
+    # =========================================================================
+
+    async def _request_stream(
+        self,
+        prompt: str,
     ) -> AsyncGenerator[str, None]:
 
         client = self._get_client()
 
-        payload = {
-            "prompt": prompt,
-            "stream": stream,
-            "workspace": self.valves.WORKSPACE_DIR,
-            "mode": "headless",
-        }
+        async with client.stream(
+            "POST",
+            "/tui",
+            json={
+                "prompt": prompt,
+                "stream": True,
+                "workspace": self.valves.WORKSPACE_DIR,
+                "mode": "headless",
+            },
+        ) as response:
 
-        try:
+            response.raise_for_status()
 
-            if stream:
+            async for line in response.aiter_lines():
 
-                async with client.stream(
-                    "POST",
-                    "/tui",
-                    json=payload,
-                    timeout=httpx.Timeout(
-                        self.valves.REQUEST_TIMEOUT,
-                        connect=10.0,
-                    ),
-                ) as response:
+                if not line:
+                    continue
 
-                    response.raise_for_status()
+                if line.startswith(
+                    "data:"
+                ):
 
-                    async for line in response.aiter_lines():
+                    raw = line[
+                        len("data:")
+                    ].strip()
 
-                        if not line:
-                            continue
+                    if not raw:
+                        continue
 
-                        if line.startswith(
-                            "data: "
-                        ):
+                    try:
 
-                            data = line[
-                                6:
-                            ]
+                        payload = json.loads(
+                            raw
+                        )
 
-                            try:
+                    except json.JSONDecodeError:
 
-                                parsed = json.loads(
-                                    data
-                                )
+                        yield raw
 
-                                content = parsed.get(
-                                    "content",
-                                    "",
-                                )
+                        continue
 
-                                if content:
-                                    yield content
+                    if payload.get(
+                        "done"
+                    ):
 
-                            except json.JSONDecodeError:
+                        continue
 
-                                yield data
+                    if payload.get(
+                        "error"
+                    ):
 
-                        elif line.startswith(
-                            "event:"
-                        ):
+                        yield (
+                            "\n\n**OpenCode error:** "
+                            + str(
+                                payload["error"]
+                            )
+                        )
 
-                            continue
+                        continue
 
-                        else:
-
-                            yield line
-
-            else:
-
-                response = await client.post(
-                    "/tui",
-                    json=payload,
-                    timeout=httpx.Timeout(
-                        self.valves.REQUEST_TIMEOUT,
-                        connect=10.0,
-                    ),
-                )
-
-                response.raise_for_status()
-
-                data = response.json()
-
-                content = data.get(
-                    "content",
-                    data.get(
-                        "response",
-                        data.get(
-                            "text",
-                            "",
-                        ),
-                    ),
-                )
-
-                if content:
-                    yield content
-                else:
-                    yield json.dumps(
-                        data,
-                        indent=2,
+                    text = self._extract_text(
+                        payload
                     )
 
-        except httpx.ConnectError:
+                    if text:
+                        yield text
 
-            yield (
-                "**OpenCode Server Unavailable**\n\n"
-                f"Cannot connect to "
-                f"`{self.valves.OPENCODE_SERVER_URL}`."
-            )
+                else:
 
-        except httpx.TimeoutException:
-
-            yield (
-                "**OpenCode Server Timeout**\n\n"
-                "The coding task exceeded the configured "
-                "request timeout."
-            )
-
-        except httpx.HTTPStatusError as exc:
-
-            yield (
-                f"**OpenCode Server Error "
-                f"({exc.response.status_code})**\n\n"
-                f"```text\n"
-                f"{exc.response.text[:2000]}"
-                f"\n```"
-            )
-
-        except Exception as exc:
-
-            yield (
-                f"**OpenCode Integration Error**\n\n"
-                f"`{type(exc).__name__}: "
-                f"{str(exc)[:1000]}`"
-            )
-
+                    yield line
 
     # =========================================================================
-    # Pipe
+    # PIPE
     # =========================================================================
 
     async def pipe(
         self,
         body: dict,
-        __user__: dict,
+        __user__: Optional[dict],
         __request__: Request,
         __event_emitter__=None,
     ) -> AsyncGenerator[str, None]:
 
-        model_id = (
+        model_id = str(
             body.get(
                 "model",
-                "",
-            )
-            .replace(
-                "opencode.",
-                "",
-                1,
+                "opencode-agent",
             )
         )
+
+        if model_id.startswith(
+            "opencode."
+        ):
+
+            model_id = model_id[
+                len("opencode.") :
+            ]
 
         messages = body.get(
             "messages",
             [],
         )
 
-        stream = body.get(
-            "stream",
-            True,
+        if not isinstance(
+            messages,
+            list,
+        ):
+
+            yield (
+                "**BRIGER Error:** "
+                "`messages` must be a list."
+            )
+
+            return
+
+        if not messages:
+
+            yield (
+                "**BRIGER Error:** "
+                "No messages were provided."
+            )
+
+            return
+
+        stream = bool(
+            body.get(
+                "stream",
+                True,
+            )
         )
 
         if not self.valves.STREAMING_ENABLED:
+
             stream = False
 
+        # ---------------------------------------------------------------------
+        # Status: connecting
+        # ---------------------------------------------------------------------
 
         if __event_emitter__:
 
@@ -519,13 +598,13 @@ You must follow this engineering workflow:
                 },
             )
 
+        # ---------------------------------------------------------------------
+        # Health
+        # ---------------------------------------------------------------------
 
-        available = (
-            await self._check_server_health()
-        )
+        healthy = await self._check_health()
 
-
-        if not available:
+        if not healthy:
 
             if __event_emitter__:
 
@@ -533,7 +612,7 @@ You must follow this engineering workflow:
                     "status",
                     {
                         "description": (
-                            "OpenCode server unavailable."
+                            "OpenCode server is unavailable."
                         ),
                         "done": True,
                     },
@@ -541,12 +620,24 @@ You must follow this engineering workflow:
 
             yield (
                 "**BRIGER OpenCode is unavailable.**\n\n"
-                "Check the OpenCode server at "
-                f"`{self.valves.OPENCODE_SERVER_URL}`."
+                f"Server: `{self.valves.OPENCODE_SERVER_URL}`\n\n"
+                "Check the BRIGER container logs."
             )
 
             return
 
+        # ---------------------------------------------------------------------
+        # Build prompt
+        # ---------------------------------------------------------------------
+
+        prompt = self._build_prompt(
+            messages,
+            model_id,
+        )
+
+        # ---------------------------------------------------------------------
+        # Status: working
+        # ---------------------------------------------------------------------
 
         if __event_emitter__:
 
@@ -554,29 +645,74 @@ You must follow this engineering workflow:
                 "status",
                 {
                     "description": (
-                        f"OpenCode Agent "
-                        f"({model_id}) is working..."
+                        "OpenCode is working..."
                     ),
                     "done": False,
                 },
             )
 
-
-        prompt = self._build_godmode_prompt(
-            messages,
-            model_id,
-        )
-
-
         try:
 
-            async for chunk in self._call_opencode_api(
-                prompt,
-                stream=stream,
-            ):
+            if stream:
 
-                if chunk:
-                    yield chunk
+                async for chunk in self._request_stream(
+                    prompt
+                ):
+
+                    if chunk:
+                        yield chunk
+
+            else:
+
+                result = await self._request_once(
+                    prompt
+                )
+
+                if result:
+                    yield result
+
+        except httpx.ConnectError:
+
+            yield (
+                "**BRIGER Connection Error**\n\n"
+                f"Could not connect to "
+                f"`{self.valves.OPENCODE_SERVER_URL}`."
+            )
+
+        except httpx.TimeoutException:
+
+            yield (
+                "**BRIGER Timeout**\n\n"
+                "The OpenCode task exceeded the "
+                f"{self.valves.REQUEST_TIMEOUT:.0f}-second timeout."
+            )
+
+        except httpx.HTTPStatusError as exc:
+
+            status_code = exc.response.status_code
+
+            try:
+
+                detail = exc.response.json()
+
+            except Exception:
+
+                detail = exc.response.text
+
+            yield (
+                f"**BRIGER OpenCode HTTP {status_code}**\n\n"
+                f"```text\n"
+                f"{str(detail)[:4000]}\n"
+                f"```"
+            )
+
+        except Exception as exc:
+
+            yield (
+                "**BRIGER Integration Error**\n\n"
+                f"`{type(exc).__name__}: "
+                f"{str(exc)[:2000]}`"
+            )
 
         finally:
 
@@ -586,22 +722,21 @@ You must follow this engineering workflow:
                     "status",
                     {
                         "description": (
-                            "OpenCode Agent completed."
+                            "OpenCode task completed."
                         ),
                         "done": True,
                     },
                 )
 
-
     # =========================================================================
-    # Shutdown
+    # SHUTDOWN
     # =========================================================================
 
     async def on_shutdown(
         self,
     ):
 
-        if self._client:
+        if self._client is not None:
 
             await self._client.aclose()
 
