@@ -90,8 +90,8 @@ if [[ -d "$SKILL_SOURCE_DIR" ]]; then
         skill_name="$(basename "$skill_file")"
         target_file="$SKILL_TARGET_DIR/$skill_name"
 
-        # Never copy a file onto itself.
-        if [[ "$(realpath "$skill_file")" == "$(realpath "$target_file" 2>/dev/null || echo "$target_file")" ]]; then
+        # Never copy a file onto itself safely under 'set -e'
+        if [[ -f "$target_file" ]] && [[ "$(realpath "$skill_file")" == "$(realpath "$target_file")" ]]; then
             log "Skill already installed: $skill_name"
             continue
         fi
