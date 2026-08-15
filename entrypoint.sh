@@ -25,12 +25,12 @@ LOG_DIR="${LOG_DIR:-/app/logs}"
 # ==============================================================================
 
 log() {
-    echo "[BRIGER] $*"
+ echo "[BRIGER] $*"
 }
 
 fail() {
-    echo "[BRIGER][ERROR] $*" >&2
-    exit 1
+ echo "[BRIGER][ERROR] $*" >&2
+ exit 1
 }
 
 # ==============================================================================
@@ -38,19 +38,19 @@ fail() {
 # ==============================================================================
 
 mkdir -p \
-    "$WORKSPACE_DIR" \
-    "$OPENCODE_CONFIG_DIR" \
-    "$OPENCODE_CONFIG_DIR/skills" \
-    "$LOG_DIR" \
-    "/app/data"
+ "$WORKSPACE_DIR" \
+ "$OPENCODE_CONFIG_DIR" \
+ "$OPENCODE_CONFIG_DIR/skills" \
+ "$LOG_DIR" \
+ "/app/data"
 
 # ==============================================================================
 # Permissions
 # ==============================================================================
 
 chmod +x \
-    "$APP_DIR/entrypoint.sh" \
-    2>/dev/null || true
+ "$APP_DIR/entrypoint.sh" \
+ 2>/dev/null || true
 
 # ==============================================================================
 # Environment
@@ -71,11 +71,11 @@ export OPENCODE_DIR="$WORKSPACE_DIR"
 
 if [[ -f "$APP_DIR/config/opencode.json" ]]; then
 
-    cp \
-        "$APP_DIR/config/opencode.json" \
-        "$OPENCODE_CONFIG_DIR/opencode.json"
+ cp \
+ "$APP_DIR/config/opencode.json" \
+ "$OPENCODE_CONFIG_DIR/opencode.json"
 
-    log "OpenCode configuration installed."
+ log "OpenCode configuration installed."
 
 fi
 
@@ -88,46 +88,46 @@ SKILL_TARGET_DIR="$OPENCODE_CONFIG_DIR/skills"
 
 if [[ -d "$SKILL_SOURCE_DIR" ]]; then
 
-    while IFS= read -r -d '' skill_file; do
+ while IFS= read -r -d '' skill_file; do
 
-        skill_name="$(basename "$skill_file")"
+ skill_name="$(basename "$skill_file")"
 
-        cp \
-            "$skill_file" \
-            "$SKILL_TARGET_DIR/$skill_name"
+ cp \
+ "$skill_file" \
+ "$SKILL_TARGET_DIR/$skill_name"
 
-        log "Installed skill: $skill_name"
+ log "Installed skill: $skill_name"
 
-    done < <(
-        find "$SKILL_SOURCE_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.md" \
-            -print0
-    )
+ done < <(
+ find "$SKILL_SOURCE_DIR" \
+ -maxdepth 1 \
+ -type f \
+ -name "*.md" \
+ -print0
+ )
 
 fi
 
 # Also install repository-level skills if present.
 if [[ -d "$APP_DIR/.opencode/skills" ]]; then
 
-    while IFS= read -r -d '' skill_file; do
+ while IFS= read -r -d '' skill_file; do
 
-        skill_name="$(basename "$skill_file")"
+ skill_name="$(basename "$skill_file")"
 
-        cp \
-            "$skill_file" \
-            "$SKILL_TARGET_DIR/$skill_name"
+ cp \
+ "$skill_file" \
+ "$SKILL_TARGET_DIR/$skill_name"
 
-        log "Installed repository skill: $skill_name"
+ log "Installed repository skill: $skill_name"
 
-    done < <(
-        find "$APP_DIR/.opencode/skills" \
-            -maxdepth 1 \
-            -type f \
-            -name "*.md" \
-            -print0
-    )
+ done < <(
+ find "$APP_DIR/.opencode/skills" \
+ -maxdepth 1 \
+ -type f \
+ -name "*.md" \
+ -print0
+ )
 
 fi
 
@@ -139,7 +139,7 @@ BRIGER_SKILL="$SKILL_TARGET_DIR/briger.md"
 
 if [[ ! -f "$BRIGER_SKILL" ]]; then
 
-    cat > "$BRIGER_SKILL" <<'EOF'
+ cat > "$BRIGER_SKILL" <<'EOF'
 # BRIGER Engineering Rules
 
 You are operating inside the BRIGER workspace.
@@ -184,7 +184,7 @@ When fixing a bug, identify the root cause rather than masking symptoms.
 Always verify changes where practical.
 EOF
 
-    log "Created BRIGER system skill."
+ log "Created BRIGER system skill."
 
 fi
 
@@ -194,12 +194,12 @@ fi
 
 if command -v opencode >/dev/null 2>&1; then
 
-    log "OpenCode binary:"
-    opencode --version || true
+ log "OpenCode binary:"
+ opencode --version || true
 
 else
 
-    log "WARNING: 'opencode' binary was not found."
+ log "WARNING: 'opencode' binary was not found."
 
 fi
 
@@ -209,7 +209,7 @@ fi
 
 if [[ ! -f "$APP_DIR/opencode_server/main.py" ]]; then
 
-    fail "Missing opencode_server/main.py"
+ fail "Missing opencode_server/main.py"
 
 fi
 
@@ -217,27 +217,11 @@ fi
 # Verify configuration
 # ==============================================================================
 
-if [[ -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
+SUPERVISOR_CONF="/etc/supervisor/conf.d/supervisord.conf"
 
-    if command -v python >/dev/null 2>&1; then
+if [[ ! -f "$SUPERVISOR_CONF" ]]; then
 
-        python - "$OPENCODE_CONFIG_DIR/opencode.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-
-try:
-    with open(path, "r", encoding="utf-8") as f:
-        json.load(f)
-except Exception as exc:
-    print(f"[BRIGER][ERROR] Invalid OpenCode config: {exc}")
-    sys.exit(1)
-
-print("[BRIGER] OpenCode config JSON is valid.")
-PY
-
-    fi
+ fail "Missing $SUPERVISOR_CONF"
 
 fi
 
@@ -249,26 +233,20 @@ fi
 # ==============================================================================
 
 rm -f \
-    "/app/.env.export" \
-    2>/dev/null || true
+ "/app/.env.export" \
+ 2>/dev/null || true
 
 # ==============================================================================
 # Supervisor
 # ==============================================================================
 
-if [[ ! -f "$APP_DIR/config/supervisord.conf" ]]; then
-
-    fail "Missing config/supervisord.conf"
-
-fi
-
 log "=================================================="
 log " BRIGER"
 log "=================================================="
-log "Workspace       : $WORKSPACE_DIR"
+log "Workspace : $WORKSPACE_DIR"
 log "OpenCode server : $OPENCODE_SERVER_HOSTNAME:$OPENCODE_SERVER_PORT"
-log "Open WebUI      : 0.0.0.0:$WEBUI_PORT"
-log "Config          : $OPENCODE_CONFIG_DIR"
+log "Open WebUI : 0.0.0.0:$WEBUI_PORT"
+log "Config : $OPENCODE_CONFIG_DIR"
 log "=================================================="
 
 # ==============================================================================
@@ -276,5 +254,5 @@ log "=================================================="
 # ==============================================================================
 
 exec /usr/bin/supervisord \
-    -n \
-    -c "$APP_DIR/config/supervisord.conf"
+ -n \
+ -c "$SUPERVISOR_CONF"
