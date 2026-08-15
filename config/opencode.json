@@ -1,45 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-
-  "server": {
-    "port": 4096,
-    "hostname": "0.0.0.0",
-    "mdns": false,
-    "cors": [
-      "http://localhost:8080",
-      "http://127.0.0.1:8080",
-      "http://localhost:7860",
-      "http://127.0.0.1:7860"
-    ]
+  "share": "disabled",
+  "autoupdate": false,
+  "permission": {
+    "*": "allow"
   },
-
   "skills": [
     "/app/.opencode/skills"
-  ],
-
-  "permission": {
-    "read": "allow",
-    "edit": "allow",
-    "write": "allow",
-    "bash": "allow",
-    "glob": "allow",
-    "grep": "allow",
-    "list": "allow",
-    "lsp": "allow",
-    "skill": "allow",
-    "task": "allow",
-    "webfetch": "allow",
-    "websearch": "allow",
-    "external_directory": "deny",
-    "git": "allow"
-  },
-
-  "workspace": "/app/workspace",
-
-  "git": {
-    "auto_commit": false,
-    "worktree_base": "/app/workspace/.worktrees"
-  },
-
-  "log_level": "info"
+  ]
 }
