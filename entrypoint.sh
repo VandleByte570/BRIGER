@@ -221,10 +221,21 @@ fi
 # Verify Supervisor
 # ==============================================================================
 
-SUPERVISOR_CONF="/etc/supervisor/conf.d/supervisord.conf"
+SYSTEM_SUPERVISOR_CONF="/etc/supervisor/conf.d/supervisord.conf"
+REPO_SUPERVISOR_CONF="$APP_DIR/config/supervisord.conf"
 
-if [[ ! -f "$SUPERVISOR_CONF" ]]; then
-    fail "Missing $SUPERVISOR_CONF"
+if [[ -f "$SYSTEM_SUPERVISOR_CONF" ]]; then
+    SUPERVISOR_CONF="$SYSTEM_SUPERVISOR_CONF"
+    log "Supervisor configuration found: $SUPERVISOR_CONF"
+
+elif [[ -f "$REPO_SUPERVISOR_CONF" ]]; then
+    SUPERVISOR_CONF="$REPO_SUPERVISOR_CONF"
+    log "Supervisor configuration found in repository: $SUPERVISOR_CONF"
+
+else
+    fail "Supervisor configuration not found."
+    fail "Checked: $SYSTEM_SUPERVISOR_CONF"
+    fail "Checked: $REPO_SUPERVISOR_CONF"
 fi
 
 # ==============================================================================
