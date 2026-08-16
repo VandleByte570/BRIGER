@@ -15,6 +15,7 @@ from .updater import Updater
 from .uninstaller import Uninstaller
 from .doctor import Doctor
 from .utils import read_version
+from .wizard import Wizard
 
 VERSION = read_version()
 
@@ -52,7 +53,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.install:
-            return installer.run_install()
+            # Launch the interactive wizard by default. If --yes given, run non-interactively.
+            wizard = Wizard(install_dir=args.install_dir, assume_yes=args.yes, noninteractive=args.yes)
+            return wizard.run()
 
         if args.update:
             updater = Updater(install_dir=installer.install_dir, assume_yes=args.yes)
