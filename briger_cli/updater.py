@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .utils import run_cmd, ensure_dir, which
+from .utils import run_cmd, ensure_dir, which, is_root
 
 
 class Updater:
@@ -15,7 +15,7 @@ class Updater:
             self.install_dir = Path(install_dir).expanduser().resolve()
         else:
             # default same logic as installer
-            from .installer import DEFAULT_SYSTEM_DIR, DEFAULT_USER_DIR, is_root
+            from .installer import DEFAULT_SYSTEM_DIR, DEFAULT_USER_DIR
             self.install_dir = DEFAULT_SYSTEM_DIR if is_root() else DEFAULT_USER_DIR
         self.assume_yes = assume_yes
 
@@ -36,6 +36,9 @@ class Updater:
         from .installer import Installer
         inst = Installer(install_dir=str(self.install_dir), assume_yes=self.assume_yes)
         inst.install_python_requirements()
-        inst.create_launcher()
+        try:
+            inst.create_launcher()
+        except Exception as exc:
+            self.log("Failed to recreate launcher during update:", str(exc))
         self.log("Update complete.")
         return 0
