@@ -11,25 +11,33 @@ set -Eeuo pipefail
 # explicitly sets APP_DIR.
 APP_DIR="${APP_DIR:-/app}"
 
+# DATA_DIR: persistent storage for workspace, config, logs. Default to /app/data
+# but prefer /workspace/data when running in HF Spaces.
+DATA_DIR="${DATA_DIR:-/app/data}"
+if [[ -d "/workspace" && "${DATA_DIR}" == "/app/data" ]]; then
+    DATA_DIR="/workspace/data"
+fi
+
+# Prefer repository mount at /workspace when available.
 if [[ -d "/workspace" && "${APP_DIR}" == "/app" ]]; then
     APP_DIR="/workspace"
 fi
 
-WORKSPACE_DIR="${WORKSPACE_DIR:-$APP_DIR/workspace}"
+# Directories (prefer DATA_DIR to keep runtime files on persistent volume)
+WORKSPACE_DIR="${WORKSPACE_DIR:-$DATA_DIR/workspace}"
+OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$DATA_DIR/.opencode}"
+LOG_DIR="${LOG_DIR:-$DATA_DIR/logs}"
 
-OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$APP_DIR/.opencode}"
-
-OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-0.0.0.0}"
+# Secure default: bind OpenCode to localhost unless the user overrides explicitly
+OPENCODE_SERVER_HOSTNAME="${OPENCODE_SERVER_HOSTNAME:-127.0.0.1}"
 OPENCODE_SERVER_PORT="${OPENCODE_SERVER_PORT:-4096}"
 
 WEBUI_PORT="${PORT:-7860}"
 
-LOG_DIR="${LOG_DIR:-/app/logs}"
+# Export early so supervisord receives these environment variables
+export DATA_DIR WORKSPACE_DIR OPENCODE_CONFIG_DIR LOG_DIR OPENCODE_SERVER_HOSTNAME OPENCODE_SERVER_PORT PORT="$WEBUI_PORT"
 
-# ==============================================================================
 # Helpers
-# ==============================================================================
-
 log() {
     echo "[BRIGER] $*"
 }
@@ -43,10 +51,7 @@ fail() {
     exit 1
 }
 
-# ==============================================================================
-# Directories
-# ==============================================================================
-
+# Ensure directories exist before proceeding
 mkdir -p \
     "$WORKSPACE_DIR" \
     "$OPENCODE_CONFIG_DIR" \
@@ -54,8 +59,16 @@ mkdir -p \
     "$LOG_DIR" \
     "$APP_DIR/data"
 
+# Safe one-time migration: copy repo-provided defaults into DATA_DIR when target empty
+if [[ -d "/app/.opencode" && -z "$(ls -A "$OPENCODE_CONFIG_DIR" 2>/dev/null)" ]]; then
+    cp -a /app/.opencode/* "$OPENCODE_CONFIG_DIR/" 2>/dev/null || true
+fi
+if [[ -d "/app/workspace" && -z "$(ls -A "$WORKSPACE_DIR" 2>/dev/null)" ]]; then
+    cp -a /app/workspace/* "$WORKSPACE_DIR/" 2>/dev/null || true
+fi
+
 # ==============================================================================
-# Environment
+# Environment (export redundant values for scripts that expect them)
 # ==============================================================================
 
 export WORKSPACE_DIR
@@ -64,6 +77,7 @@ export OPENCODE_SERVER_HOSTNAME
 export OPENCODE_SERVER_PORT
 export PORT="$WEBUI_PORT"
 export OPENCODE_DIR="$WORKSPACE_DIR"
+export LOG_DIR
 
 # ==============================================================================
 # OpenCode configuration
@@ -122,13 +136,6 @@ fi
 
 # ===================================================
 # Repository-level skills
-#
-# These skills are already
-# installed by the Dockerfile in:
-# /app/.opencode/skills
-#
-# Do NOT copy them again.
-#
 # ===================================================
 
 REPOSITORY_SKILL_DIR="$APP_DIR/.opencode/skills"
@@ -213,7 +220,7 @@ if command -v opencode >/dev/null 2>&1; then
 
 else
 
-    error "OpenCode binary was not found."
+    error "OpenCode binary was not found. The server will continue but /tui will return 503 until opencode is installed."
 
 fi
 
