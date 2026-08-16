@@ -119,6 +119,77 @@ PYTHONPATH=. python3 -m briger_cli --uninstall --install-dir /tmp/briger-test --
 
 ---
 
+## Docker installation (build & run)
+
+BRIGER includes all code needed to run inside a container. Below is an example Dockerfile and a minimal set of commands to build and run BRIGER as a container. This example preserves the repository's Docker/Hugging Face-friendly design and does not alter your existing Dockerfile.
+
+Example Dockerfile (illustrative - adapt to your distro/base image):
+
+```dockerfile
+# Example Dockerfile for BRIGER
+# Use a slim Python base; adapt the Node/npm install steps to your base image
+FROM python:3.11-slim
+
+# Install system dependencies (git, curl, build tools) and Node.js/npm (example uses NodeSource)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    wget \
+    gnupg2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (LTS) from NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install global OpenCode (optional - the installer can also do this)
+RUN npm install -g opencode-ai || true
+
+# Create app directory
+WORKDIR /app
+
+# Copy repository into image (or use a multi-stage build)
+COPY . /app
+
+# Install Python server requirements
+RUN pip install --no-cache-dir -r opencode_server/requirements.txt || true
+
+# Ensure entrypoint is executable (repository contains entrypoint.sh)
+RUN chmod +x /app/entrypoint.sh || true
+
+# Expose UI and opencode server ports (adjust to your config)
+EXPOSE 7860 4096
+
+# Default entrypoint uses the existing repository entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD []
+```
+
+Build and run the image (example):
+
+```bash
+# Build the Docker image (run from repository root)
+docker build -t briger:latest .
+
+# Run the container and map ports + persistent data directory
+docker run -it --rm \
+  -p 7860:7860 \
+  -p 4096:4096 \
+  -v /path/on/host/briger_data:/app/data \
+  --name briger briger:latest
+```
+
+Notes for Docker users
+
+- The example Dockerfile is intentionally generic. If your base image already provides Node.js/npm or other dependencies, adapt the steps accordingly.
+- The installer's host-side CLI is designed for local installs; containers typically run the server directly (Dockerfile above runs the repository's entrypoint.sh which starts supervisord).
+- If you prefer the container to run with an existing installation path (e.g., `/opt/briger`), mount a host directory into the container and point the environment variables accordingly.
+
+---
+
 ## Troubleshooting
 
 - `briger` command not found after bootstrap:
