@@ -1,41 +1,175 @@
-# BRIGER
+# BRIGER — Open WebUI + OpenCode Integration
 
-This repository contains BRIGER — an integration of Open WebUI and OpenCode.
+BRIGER brings together Open WebUI and OpenCode into a single, easy-to-install project with a professional, modular CLI to manage installation, updates, diagnostics, and uninstallation.
 
-Quick CLI installer
+Whether you are running locally or in a container, BRIGER provides a reproducible developer experience and a headless OpenCode bridge for automated coding tasks.
 
-1. Bootstrap (first-time):
+---
 
-   curl -fsSL https://raw.githubusercontent.com/VandleByte570/BRIGER/main/install.sh | bash
+## Key features
 
-   This clones the repository to /opt/briger (if run as root) or $HOME/.briger and installs a small launcher in /usr/local/bin or $HOME/.local/bin.
+- One-command CLI management (`briger`) for install, update, uninstall, status, and diagnostics.
+- Idempotent installer: safe to run multiple times; detects existing installs and offers updates.
+- Best-effort dependency installation for common Linux package managers (apt, dnf, yum, pacman, brew).
+- Automatic attempts to install OpenCode (via `npm`) when available.
+- Non-root-friendly: installs to `/opt/briger` when run as root, otherwise installs to `$HOME/.briger`.
+- Modular implementation: installer, updater, uninstaller, and doctor tools are separate and testable modules.
+- Preserves Docker / Hugging Face functionality — the installer is a host-side tool and does not modify container files.
 
-2. Full install using the CLI:
+---
 
-   briger --install
+## Quick start (one-line bootstrap)
 
-   Use `briger -i` as a shortcut. Add `--yes` to run non-interactively:
+This bootstrap step is intentionally small: it only clones (or updates) the repository and installs a tiny launcher that provides the `briger` command. The full installer runs when you execute `briger --install`.
 
-   briger --install --yes
+```bash
+# One-time bootstrap (safe & minimal)
+curl -fsSL https://raw.githubusercontent.com/VandleByte570/BRIGER/main/install.sh | bash
+```
 
-Available commands
+After the bootstrap you should have a `briger` command in `/usr/local/bin` or `$HOME/.local/bin`. If the latter is used, make sure `~/.local/bin` is on your PATH.
 
-- briger --install / -i      Install BRIGER (idempotent). Installs dependencies where possible.
-- briger --update / -u       Update an existing BRIGER installation (git pull + re-install bits).
-- briger --uninstall         Uninstall BRIGER (destructive; requires confirmation).
-- briger --doctor            Run diagnostics to check BRIGER, OpenCode, and dependencies.
-- briger --status            Show installation status.
-- briger --version           Show briger CLI version.
-- briger --help              Show help.
+---
 
-Troubleshooting
+## Full install (recommended)
 
-- If the `briger` command is not found after bootstrap, ensure $HOME/.local/bin or /usr/local/bin is on your PATH.
-- If OpenCode is not installed automatically, install Node.js and npm and run:
+Run the installer from the `briger` CLI. This is idempotent and will detect an existing installation and offer an update instead of duplicating files.
 
+Interactive install:
+
+```bash
+briger --install
+# or
+briger -i
+```
+
+Non-interactive (CI-friendly) install:
+
+```bash
+briger --install --yes
+# or
+briger -i -y
+```
+
+You can also target a custom directory (useful for testing):
+
+```bash
+briger --install --install-dir /tmp/briger-test --yes
+```
+
+---
+
+## CLI Commands
+
+- `briger --install` / `briger -i`  — Install BRIGER (idempotent)
+- `briger --update` / `briger -u`   — Update an existing install (git pull + reapply bits)
+- `briger --uninstall`              — Uninstall BRIGER (destructive; asks for confirmation)
+- `briger --doctor`                 — Run diagnostics (binaries, config, dirs, network)
+- `briger --status`                 — Show quick status summary
+- `briger --version` / `briger -v`  — Show CLI/version
+- `briger --help`                   — Show help
+
+Each command prints clear progress prefixed with `[BRIGER]` so logs are easy to scan.
+
+---
+
+## Examples
+
+Check environment and BRIGER status:
+
+```bash
+briger --status
+briger --doctor
+```
+
+Update an existing installation:
+
+```bash
+briger --update
+```
+
+Uninstall (interactive):
+
+```bash
+briger --uninstall
+```
+
+Test installs into a temporary directory (safe):
+
+```bash
+# Run from the repository root without bootstrap
+PYTHONPATH=. python3 -m briger_cli --install --install-dir /tmp/briger-test --yes
+PYTHONPATH=. python3 -m briger_cli --doctor --install-dir /tmp/briger-test
+PYTHONPATH=. python3 -m briger_cli --uninstall --install-dir /tmp/briger-test --yes
+```
+
+---
+
+## What the installer does (high level)
+
+- Detects OS and architecture.
+- Checks for required binaries: `git`, `python3`, `pip`, `node`, `npm` and `opencode`.
+- Attempts to install missing packages using a detected package manager (best-effort).
+- Clones the BRIGER repository (or runs `git pull` if already present).
+- Installs Python requirements for the headless server (`opencode_server/requirements.txt`) using `pip --user`.
+- Attempts to install OpenCode via `npm install -g opencode-ai` if `npm` is present.
+- Configures the install directory and subdirectories: `data`, `workspace`, `logs`, `.opencode`.
+- Installs a tiny `briger` launcher into `/usr/local/bin` or `$HOME/.local/bin`.
+- Copies default `config/opencode.json` into the install `.opencode` directory if not present.
+
+---
+
+## Troubleshooting
+
+- `briger` command not found after bootstrap:
+  - Ensure `~/.local/bin` or `/usr/local/bin` is on your PATH. Add to your shell rc if needed:
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+
+- OpenCode not installed automatically:
+  - Install Node.js and npm on your system, then run:
+    ```bash
     npm install -g opencode-ai
+    ```
 
-Supported platforms
+- Permission errors when installing system packages:
+  - Running the installer as a non-root user will default to a user-local install (`$HOME/.briger`).
+  - For system-wide installs, run the bootstrap and `briger --install` using `sudo`.
 
-- Linux x86_64 and arm64 are the primary targets. The installer attempts to detect package managers (apt, dnf, yum, pacman, brew) and will try best-effort automated installs.
+- Network issues when cloning/updating:
+  - Ensure `github.com` is reachable and that firewalls/proxies allow HTTPS (port 443).
 
+---
+
+## Supported platforms
+
+Primary targets: Linux (x86_64, arm64). The installer performs best-effort detection of package managers and will attempt automated installs for common distros.
+
+If your distribution is not supported by the automated installer, the CLI will print precise instructions you can follow to complete any missing steps manually.
+
+---
+
+## Preservation of container usage
+
+BRIGER's CLI and installer are host-side tools that do not alter the repository's Dockerfile or entrypoint. Container images and Hugging Face Space setups continue to work unchanged. The installer reuses the repository's configuration files (for example `config/opencode.json`) rather than hard-coding development paths.
+
+---
+
+## Contributing
+
+Contributions are welcome. If you want to improve installation support, add shell completion, or add CI tests for the CLI:
+
+1. Fork the repository and create a branch.
+2. Add tests under a `tests/` directory where appropriate.
+3. Open a pull request describing your changes.
+
+---
+
+## License & Code of Conduct
+
+Please add your project license and code of conduct to the repository root if you plan to make BRIGER public.
+
+---
+
+If you want, I can also add pretty badges, CI workflows, argcomplete-based shell completion scripts (bash/zsh/fish), and a CONTRIBUTING.md with developer instructions — tell me which you'd like next and I'll add them.
