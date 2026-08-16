@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import subprocess
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -75,6 +76,11 @@ LOG_LEVEL = os.getenv(
     "LOG_LEVEL",
     "info",
 ).lower()
+
+
+# Quick runtime check for the opencode binary. This makes failures explicit
+# and allows /tui to return a clear 503 when the binary isn't present.
+OPENCODE_BINARY_AVAILABLE = shutil.which(OPENCODE_BINARY) is not None
 
 
 WORKSPACE_DIR.mkdir(
@@ -906,6 +912,16 @@ async def tui_process(
     verify_auth(
         credentials
     )
+
+    # If opencode is not available, return a clear service-unavailable error.
+    if not OPENCODE_BINARY_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "opencode binary not found. "
+                "Install opencode (opencode-ai / opencode-cli) in the image."
+            ),
+        )
 
     workspace = get_workspace(
         req.workspace
