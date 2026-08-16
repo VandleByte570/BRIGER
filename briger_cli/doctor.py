@@ -6,7 +6,7 @@ import socket
 from pathlib import Path
 from typing import Optional
 
-from .utils import which, run_cmd, user_home
+from .utils import which
 
 
 class Doctor:
@@ -36,12 +36,17 @@ class Doctor:
             return False
 
     def status(self) -> int:
+        """Print a brief status (report) and return 0."""
         self.log("BRIGER install dir:", str(self.install_dir))
-        print(self.run())
+        print(self.report())
         return 0
 
-    def run(self) -> str:
-        lines = []
+    def report(self) -> str:
+        """Return a textual report of binaries, directories, and network.
+
+        This is useful for displaying to the user or testing.
+        """
+        lines: list[str] = []
         lines.append(f"Install dir: {self.install_dir}")
         lines.append("Binaries:")
         for b in ("git", "python3", "pip3", "node", "npm", "opencode"):
@@ -56,7 +61,10 @@ class Doctor:
         return "\n".join(lines)
 
     def run(self) -> int:
-        # Print a human-readable report and return success/failure
+        """Run the doctor checks, print human-readable progress, and return exit code.
+
+        Returns 0 if all checks passed, 2 if issues were found.
+        """
         self.log("Checking BRIGER installation and environment...")
         ok = True
         binaries = ["git", "python3", "pip3", "node", "npm", "opencode"]
