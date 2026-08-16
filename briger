@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""
+Lightweight launcher for the BRIGER CLI. This file is installed to a
+PATH directory (for example /usr/local/bin) by the installer to provide
+`briger` as a global command.
+
+It simply runs the briger_cli package as a module so the real logic
+lives in the Python package under briger_cli/.
+"""
+
+import runpy
+
+if __name__ == "__main__":
+    # Run the package as a module. This allows the installer to install
+    # the whole repository into a directory and keep this small launcher
+    # as the global entrypoint.
+    runpy.run_module("briger_cli.__main__", run_name="__main__")

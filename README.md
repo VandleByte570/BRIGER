@@ -1,22 +1,41 @@
 # BRIGER
 
-[![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://docker.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Open WebUI](https://img.shields.io/badge/Open%20WebUI-Integrated-green)](https://openwebui.com)
-[![OpenCode](https://img.shields.io/badge/OpenCode-Integrated-orange)](https://opencode.ai)
+This repository contains BRIGER — an integration of Open WebUI and OpenCode.
 
-&gt; **Production-ready, single-container AI suite** integrating **Open WebUI** (central UI), **OpenCode** (agentic coding engine), and **GodMode** (5-stage gated engineering workflow) — deployable anywhere Docker runs, including Hugging Face Spaces CPU Standard.
+Quick CLI installer
 
----
+1. Bootstrap (first-time):
 
-## One-Line Docker Run
+   curl -fsSL https://raw.githubusercontent.com/VandleByte570/BRIGER/main/install.sh | bash
 
-```bash
-docker run -d \
-  -p 8080:8080 \
-  -p 4096:4096 \
-  -e WEBUI_SECRET_KEY="$(openssl rand -hex 32)" \
-  -e OPENAI_API_KEY="sk-..." \
-  -v openwebui-data:/app/data \
-  -v opencode-workspace:/app/workspace \
-  ghcr.io/VandleByte570/BRIGER:latest
+   This clones the repository to /opt/briger (if run as root) or $HOME/.briger and installs a small launcher in /usr/local/bin or $HOME/.local/bin.
+
+2. Full install using the CLI:
+
+   briger --install
+
+   Use `briger -i` as a shortcut. Add `--yes` to run non-interactively:
+
+   briger --install --yes
+
+Available commands
+
+- briger --install / -i      Install BRIGER (idempotent). Installs dependencies where possible.
+- briger --update / -u       Update an existing BRIGER installation (git pull + re-install bits).
+- briger --uninstall         Uninstall BRIGER (destructive; requires confirmation).
+- briger --doctor            Run diagnostics to check BRIGER, OpenCode, and dependencies.
+- briger --status            Show installation status.
+- briger --version           Show briger CLI version.
+- briger --help              Show help.
+
+Troubleshooting
+
+- If the `briger` command is not found after bootstrap, ensure $HOME/.local/bin or /usr/local/bin is on your PATH.
+- If OpenCode is not installed automatically, install Node.js and npm and run:
+
+    npm install -g opencode-ai
+
+Supported platforms
+
+- Linux x86_64 and arm64 are the primary targets. The installer attempts to detect package managers (apt, dnf, yum, pacman, brew) and will try best-effort automated installs.
+
